@@ -29,3 +29,14 @@ class Money:
     def _ensure_same_currency(self, other: "Money") -> None:
         if self.currency != other.currency:
             raise ValueError("Currency mismatch.")
+
+    @classmethod
+    def from_json_value(
+        cls,
+        amount: str | int,
+        currency: str = "CAD",
+    ) -> "Money":
+        return cls(
+            amount=Decimal(str(amount)),
+            currency=currency,
+        )

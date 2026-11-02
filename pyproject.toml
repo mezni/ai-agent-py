@@ -22,22 +22,66 @@ packages = ["src/ai_agent_py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+pythonpath = ["src"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "unit: isolated unit tests",
+    "integration: tests involving multiple components",
+    "evaluation: shared agent evaluation tests",
+    "slow: tests that take longer to execute",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+exclude = [
+    ".git",
+    ".venv",
+    "build",
+    "dist",
+]
 
 [tool.ruff.lint]
 select = [
-    "E",
-    "F",
-    "I",
-    "UP",
-    "B",
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes
+    "I",    # Import sorting
+    "UP",   # Python modernization
+    "B",    # Bugbear
+    "SIM",  # Simplification
+    "C4",   # Comprehension improvements
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101", # Assertions are expected in tests
 ]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+line-ending = "lf"
+
+
+
+[tool.coverage.run]
+branch = true
+source = ["ai_agent_py"]
+omit = [
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

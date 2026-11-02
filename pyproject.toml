@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Plain Python implementation of an AI customer support and ticket resolution agent."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "httpx>=0.28.1",
+]
 
 [dependency-groups]
 dev = [

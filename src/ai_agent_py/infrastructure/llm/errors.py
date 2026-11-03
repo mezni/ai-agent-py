@@ -1,14 +1,13 @@
-class LlmError(Exception):
-    """Base exception for LLM integration failures."""
+from ai_agent_py.application.errors import LlmServiceError
 
 
-class LlmConfigurationError(LlmError):
-    """Raised when provider configuration is invalid."""
+class LlmConfigurationError(LlmServiceError):
+    """Raised when LLM configuration is invalid."""
 
 
-class LlmProviderError(LlmError):
-    """Raised when the provider request fails."""
+class LlmRequestError(LlmServiceError):
+    """Raised when the LLM request fails."""
 
 
-class LlmResponseError(LlmError):
+class LlmResponseError(LlmServiceError):
     """Raised when the provider response is invalid."""

@@ -10,7 +10,7 @@ from ai_agent_py.application.interfaces.llm_service import (
 )
 from ai_agent_py.infrastructure.llm.config import LlmConfig
 from ai_agent_py.infrastructure.llm.errors import (
-    LlmProviderError,
+    LlmRequestError,
     LlmResponseError,
 )
 
@@ -51,7 +51,7 @@ class OpenAICompatibleLlmAdapter(LlmService):
                 response.raise_for_status()
 
         except httpx.HTTPError as exc:
-            raise LlmProviderError("LLM provider request failed.") from exc
+            raise LlmRequestError("LLM provider request failed.") from exc
 
         try:
             data: dict[str, Any] = response.json()

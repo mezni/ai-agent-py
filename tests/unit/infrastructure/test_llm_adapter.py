@@ -9,7 +9,7 @@ from ai_agent_py.application.interfaces.llm_service import (
 )
 from ai_agent_py.infrastructure.llm.config import LlmConfig
 from ai_agent_py.infrastructure.llm.errors import (
-    LlmProviderError,
+    LlmRequestError,
     LlmResponseError,
 )
 from ai_agent_py.infrastructure.llm.openai_compatible_adapter import (
@@ -70,7 +70,7 @@ def test_adapter_converts_http_error(config: LlmConfig) -> None:
     )
     adapter = OpenAICompatibleLlmAdapter(config, transport=transport)
 
-    with pytest.raises(LlmProviderError):
+    with pytest.raises(LlmRequestError):
         adapter.generate(
             LlmRequest(
                 messages=[LlmMessage(role="user", content="Hello")],

@@ -1,3 +1,6 @@
+from ai_agent_py.application.security.authorization import AuthorizationService
+from ai_agent_py.application.security.errors import AuthorizationError
+from ai_agent_py.application.security.permissions import Permission
 from ai_agent_py.application.tools.base import AgentTool
 from ai_agent_py.application.tools.context import ToolExecutionContext
 from ai_agent_py.application.tools.contracts import (
@@ -15,8 +18,13 @@ from ai_agent_py.application.tools.validation import (
 class CustomerLookupTool(AgentTool):
     name = "customer_lookup"
 
-    def __init__(self, customer_repository) -> None:
+    def __init__(
+        self,
+        customer_repository,
+        authorization_service: AuthorizationService,
+    ) -> None:
         self._customer_repository = customer_repository
+        self._authorization_service = authorization_service
 
     def execute(
         self,
@@ -33,6 +41,22 @@ class CustomerLookupTool(AgentTool):
             return ToolResult(
                 self.name,
                 ToolStatus.INVALID_ARGUMENTS,
+                reason=str(exc),
+            )
+
+        try:
+            self._authorization_service.require_permission(
+                context.actor,
+                Permission.READ_CUSTOMER,
+            )
+            self._authorization_service.require_customer_scope(
+                context.actor,
+                customer_id,
+            )
+        except AuthorizationError as exc:
+            return ToolResult(
+                self.name,
+                ToolStatus.DENIED,
                 reason=str(exc),
             )
 

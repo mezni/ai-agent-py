@@ -1,9 +1,25 @@
+from ai_agent_py.application.security.actor import (
+    ActorRole,
+    AuthenticatedActor,
+)
 from ai_agent_py.application.tools.context import ToolExecutionContext
 from ai_agent_py.application.tools.contracts import (
     ToolCall,
     ToolStatus,
 )
 from ai_agent_py.application.tools.registry import ToolRegistry
+
+
+def build_context() -> ToolExecutionContext:
+    return ToolExecutionContext(
+        actor=AuthenticatedActor(
+            actor_id="agent-1",
+            role=ActorRole.SUPPORT_AGENT,
+            customer_scope=frozenset({"customer-1"}),
+        ),
+        customer_id="customer-1",
+        ticket_id="ticket-1",
+    )
 
 
 class FakeTool:
@@ -22,12 +38,7 @@ class FakeTool:
 
 def test_registry_rejects_unknown_tool():
     registry = ToolRegistry([FakeTool("customer_lookup")])
-    context = ToolExecutionContext(
-        actor_id="agent-1",
-        actor_role="SUPPORT_AGENT",
-        customer_id="customer-1",
-        ticket_id="ticket-1",
-    )
+    context = build_context()
 
     result = registry.execute(
         ToolCall(name="unknown_tool", arguments={}),
@@ -39,12 +50,7 @@ def test_registry_rejects_unknown_tool():
 
 def test_registry_executes_registered_tool():
     registry = ToolRegistry([FakeTool("customer_lookup")])
-    context = ToolExecutionContext(
-        actor_id="agent-1",
-        actor_role="SUPPORT_AGENT",
-        customer_id="customer-1",
-        ticket_id="ticket-1",
-    )
+    context = build_context()
 
     result = registry.execute(
         ToolCall(

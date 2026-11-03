@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from ai_agent_py.application.security.actor import AuthenticatedActor
 from ai_agent_py.domain.entities import RefundAssessment
 from ai_agent_py.domain.enums import AgentIntent, ExecutionStatus
 
@@ -8,7 +9,7 @@ from ai_agent_py.domain.enums import AgentIntent, ExecutionStatus
 @dataclass(frozen=True)
 class ProcessTicketRequest:
     ticket_id: str
-    actor_id: str
+    actor: AuthenticatedActor
 
 
 @dataclass(frozen=True)

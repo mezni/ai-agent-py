@@ -1,3 +1,6 @@
+from ai_agent_py.application.security.authorization import AuthorizationService
+from ai_agent_py.application.security.errors import AuthorizationError
+from ai_agent_py.application.security.permissions import Permission
 from ai_agent_py.application.tools.base import AgentTool
 from ai_agent_py.application.tools.context import ToolExecutionContext
 from ai_agent_py.application.tools.contracts import (
@@ -15,8 +18,13 @@ from ai_agent_py.application.tools.validation import (
 class OrderLookupTool(AgentTool):
     name = "order_lookup"
 
-    def __init__(self, order_repository) -> None:
+    def __init__(
+        self,
+        order_repository,
+        authorization_service: AuthorizationService,
+    ) -> None:
         self._order_repository = order_repository
+        self._authorization_service = authorization_service
 
     def execute(
         self,
@@ -36,12 +44,36 @@ class OrderLookupTool(AgentTool):
                 reason=str(exc),
             )
 
+        try:
+            self._authorization_service.require_permission(
+                context.actor,
+                Permission.READ_ORDER,
+            )
+        except AuthorizationError as exc:
+            return ToolResult(
+                self.name,
+                ToolStatus.DENIED,
+                reason=str(exc),
+            )
+
         order = self._order_repository.get_by_id(order_id)
         if order is None:
             return ToolResult(
                 self.name,
                 ToolStatus.NOT_FOUND,
                 reason="Order not found.",
+            )
+
+        try:
+            self._authorization_service.require_customer_scope(
+                context.actor,
+                order.customer_id,
+            )
+        except AuthorizationError as exc:
+            return ToolResult(
+                self.name,
+                ToolStatus.DENIED,
+                reason=str(exc),
             )
 
         if order.customer_id != context.customer_id:

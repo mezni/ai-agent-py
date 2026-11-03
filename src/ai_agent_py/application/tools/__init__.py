@@ -1,3 +1,4 @@
+from ai_agent_py.application.security.authorization import AuthorizationService
 from ai_agent_py.application.tools.business_policy_lookup import (
     BusinessPolicyLookupTool,
 )
@@ -15,15 +16,19 @@ def build_tool_registry(
     order_repository,
     policy_repository,
     refund_policy_service,
+    authorization_service: AuthorizationService | None = None,
 ) -> ToolRegistry:
+    service = authorization_service or AuthorizationService()
+
     return ToolRegistry(
         [
-            CustomerLookupTool(customer_repository),
-            OrderLookupTool(order_repository),
-            BusinessPolicyLookupTool(policy_repository),
+            CustomerLookupTool(customer_repository, service),
+            OrderLookupTool(order_repository, service),
+            BusinessPolicyLookupTool(policy_repository, service),
             RefundEligibilityAssessmentTool(
                 order_repository=order_repository,
                 refund_policy_service=refund_policy_service,
+                authorization_service=service,
             ),
         ]
     )

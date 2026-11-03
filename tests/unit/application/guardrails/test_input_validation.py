@@ -8,30 +8,35 @@ from ai_agent_py.application.guardrails.input_validation import (
     validate_process_ticket_request,
     validate_ticket_text,
 )
+from ai_agent_py.application.security.actor import (
+    ActorRole,
+    AuthenticatedActor,
+)
+
+
+def build_actor(actor_id: str = "agent-001") -> AuthenticatedActor:
+    return AuthenticatedActor(
+        actor_id=actor_id,
+        role=ActorRole.SUPPORT_AGENT,
+        customer_scope=frozenset({"customer-001"}),
+    )
 
 
 def test_valid_request_is_accepted():
     validate_process_ticket_request(
         ProcessTicketRequest(
             ticket_id="ticket-001",
-            actor_id="agent-001",
+            actor=build_actor(),
         )
     )
 
 
-@pytest.mark.parametrize(
-    "ticket_id,actor_id",
-    [
-        ("", "agent-001"),
-        ("ticket-001", ""),
-    ],
-)
-def test_request_rejects_empty_identifiers(ticket_id, actor_id):
+def test_request_rejects_empty_ticket_id():
     with pytest.raises(GuardrailViolationError):
         validate_process_ticket_request(
             ProcessTicketRequest(
-                ticket_id=ticket_id,
-                actor_id=actor_id,
+                ticket_id="",
+                actor=build_actor(),
             )
         )
 
@@ -62,7 +67,7 @@ def test_request_rejects_oversized_identifiers(ticket_id, actor_id):
         validate_process_ticket_request(
             ProcessTicketRequest(
                 ticket_id=ticket_id,
-                actor_id=actor_id,
+                actor=build_actor(actor_id),
             )
         )
 

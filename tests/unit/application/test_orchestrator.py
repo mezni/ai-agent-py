@@ -1,6 +1,11 @@
 import pytest
 
 from ai_agent_py.application.orchestrator import CustomAgentOrchestrator
+from ai_agent_py.application.security.actor import (
+    ActorRole,
+    AuthenticatedActor,
+)
+from ai_agent_py.application.security.authorization import AuthorizationService
 from ai_agent_py.domain.entities import Customer, Ticket
 from ai_agent_py.domain.enums import TicketStatus
 from ai_agent_py.domain.services.refund_policy import RefundPolicyService
@@ -45,6 +50,17 @@ class FakeOrderRepository:
         return []
 
 
+def build_actor(
+    *customer_ids: str,
+    role: ActorRole = ActorRole.SUPPORT_AGENT,
+) -> AuthenticatedActor:
+    return AuthenticatedActor(
+        actor_id="support-agent-1",
+        role=role,
+        customer_scope=frozenset(customer_ids or ("CUST-001",)),
+    )
+
+
 @pytest.fixture
 def fake_llm() -> FakeLlmService:
     return FakeLlmService()
@@ -75,6 +91,7 @@ def orchestrator(fake_llm: FakeLlmService) -> CustomAgentOrchestrator:
         order_repository=FakeOrderRepository(),
         llm_service=fake_llm,
         refund_policy_service=RefundPolicyService(),
+        authorization_service=AuthorizationService(),
     )
 
 
@@ -85,7 +102,7 @@ def test_process_ticket_raises_when_ticket_missing(orchestrator):
 
     request = ProcessTicketRequest(
         ticket_id="missing-ticket",
-        actor_id="support-agent-1",
+        actor=build_actor(),
     )
 
     with pytest.raises(TicketNotFoundError):
@@ -110,7 +127,7 @@ def test_process_ticket_classifies_and_returns_suggestion(
     result = orchestrator.process(
         ProcessTicketRequest(
             ticket_id="ticket-001",
-            actor_id="support-agent-1",
+            actor=build_actor(),
         )
     )
 
@@ -137,7 +154,7 @@ def test_process_ticket_rejects_invalid_intent(
         orchestrator.process(
             ProcessTicketRequest(
                 ticket_id="ticket-001",
-                actor_id="support-agent-1",
+                actor=build_actor(),
             )
         )
 
@@ -164,13 +181,14 @@ def test_process_ticket_raises_when_customer_missing():
         order_repository=FakeOrderRepository(),
         llm_service=fake_llm,
         refund_policy_service=RefundPolicyService(),
+        authorization_service=AuthorizationService(),
     )
 
     with pytest.raises(CustomerNotFoundError):
         orchestrator.process(
             ProcessTicketRequest(
                 ticket_id="ticket-001",
-                actor_id="support-agent-1",
+                actor=build_actor("CUST-MISSING"),
             )
         )
 
@@ -233,12 +251,13 @@ def test_process_refund_request_assesses_order_eligibility(fake_llm):
         order_repository=FakeOrderRepositoryWithOrder([order]),
         llm_service=fake_llm,
         refund_policy_service=RefundPolicyService(),
+        authorization_service=AuthorizationService(),
     )
 
     result = orchestrator.process(
         ProcessTicketRequest(
             ticket_id="ticket-001",
-            actor_id="support-agent-1",
+            actor=build_actor(),
         )
     )
 
@@ -247,7 +266,7 @@ def test_process_refund_request_assesses_order_eligibility(fake_llm):
     assert result.reasons
 
     with pytest.raises(GuardrailViolationError):
-        orchestrator.process(ProcessTicketRequest(ticket_id="  ", actor_id="support-agent-1"))
+        orchestrator.process(ProcessTicketRequest(ticket_id="  ", actor=build_actor()))
 
 
 @pytest.mark.unit
@@ -279,14 +298,43 @@ def test_process_refund_request_without_order_reason(fake_llm):
         order_repository=FakeOrderRepository(),
         llm_service=fake_llm,
         refund_policy_service=RefundPolicyService(),
+        authorization_service=AuthorizationService(),
     )
 
     result = orchestrator.process(
         ProcessTicketRequest(
             ticket_id="ticket-001",
-            actor_id="support-agent-1",
+            actor=build_actor(),
         )
     )
 
     assert result.refund_assessment is None
     assert "No matching customer order" in result.reasons[0]
+
+
+@pytest.mark.unit
+def test_process_ticket_requires_process_permission(orchestrator):
+    from ai_agent_py.application.dto import ProcessTicketRequest
+    from ai_agent_py.application.security.errors import AuthorizationError
+
+    with pytest.raises(AuthorizationError):
+        orchestrator.process(
+            ProcessTicketRequest(
+                ticket_id="ticket-001",
+                actor=build_actor(role=ActorRole.ADMIN),
+            )
+        )
+
+
+@pytest.mark.unit
+def test_process_ticket_requires_customer_scope(orchestrator):
+    from ai_agent_py.application.dto import ProcessTicketRequest
+    from ai_agent_py.application.security.errors import AuthorizationError
+
+    with pytest.raises(AuthorizationError):
+        orchestrator.process(
+            ProcessTicketRequest(
+                ticket_id="ticket-001",
+                actor=build_actor("CUST-OTHER"),
+            )
+        )

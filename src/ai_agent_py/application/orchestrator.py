@@ -26,6 +26,8 @@ from ai_agent_py.application.interfaces.llm_service import (
     LlmRequest,
     LlmService,
 )
+from ai_agent_py.application.security.authorization import AuthorizationService
+from ai_agent_py.application.security.permissions import Permission
 from ai_agent_py.application.structured_output import (
     parse_json_object,
     require_object,
@@ -73,21 +75,34 @@ class CustomAgentOrchestrator:
         order_repository,
         llm_service: LlmService,
         refund_policy_service: RefundPolicyService,
+        authorization_service: AuthorizationService,
     ) -> None:
         self._ticket_repository = ticket_repository
         self._customer_repository = customer_repository
         self._order_repository = order_repository
         self._llm_service = llm_service
         self._refund_policy_service = refund_policy_service
+        self._authorization_service = authorization_service
 
     def process(
         self,
         request: ProcessTicketRequest,
     ) -> AgentResult:
         validate_process_ticket_request(request)
+        self._authorization_service.require_permission(
+            request.actor,
+            Permission.PROCESS_TICKET,
+        )
+
         ticket = self._ticket_repository.get_by_id(request.ticket_id)
         if ticket is None:
             raise TicketNotFoundError(f"Ticket '{request.ticket_id}' was not found.")
+
+        self._authorization_service.require_customer_scope(
+            request.actor,
+            ticket.customer_id,
+        )
+
         ticket_text = validate_ticket_text(str(ticket.description))
 
         customer = self._customer_repository.get_by_id(ticket.customer_id)

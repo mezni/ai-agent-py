@@ -11,6 +11,16 @@ from ai_agent_py.application.errors import (
     InvalidLlmOutputError,
     TicketNotFoundError,
 )
+from ai_agent_py.application.guardrails.input_validation import (
+    validate_process_ticket_request,
+    validate_ticket_text,
+)
+from ai_agent_py.application.guardrails.output_validation import (
+    validate_suggested_response,
+)
+from ai_agent_py.application.guardrails.untrusted_context import (
+    serialize_untrusted_context,
+)
 from ai_agent_py.application.interfaces.llm_service import (
     LlmMessage,
     LlmRequest,
@@ -74,9 +84,11 @@ class CustomAgentOrchestrator:
         self,
         request: ProcessTicketRequest,
     ) -> AgentResult:
+        validate_process_ticket_request(request)
         ticket = self._ticket_repository.get_by_id(request.ticket_id)
         if ticket is None:
             raise TicketNotFoundError(f"Ticket '{request.ticket_id}' was not found.")
+        ticket_text = validate_ticket_text(str(ticket.description))
 
         customer = self._customer_repository.get_by_id(ticket.customer_id)
         if customer is None:
@@ -85,7 +97,6 @@ class CustomAgentOrchestrator:
         orders = self._order_repository.get_by_customer_id(ticket.customer_id)
 
         # Minimize context sent to the model. Do not include customer email.
-        ticket_text = str(ticket.description)
         classification = self._classify(ticket_text)
 
         refund_assessment = None
@@ -128,6 +139,10 @@ class CustomAgentOrchestrator:
         )
 
     def _classify(self, ticket_text: str) -> TicketClassification:
+        content = serialize_untrusted_context(
+            ticket_text=ticket_text,
+            retrieved_data={},
+        )
         request = LlmRequest(
             messages=[
                 LlmMessage(
@@ -136,7 +151,7 @@ class CustomAgentOrchestrator:
                 ),
                 LlmMessage(
                     role="user",
-                    content=f"Ticket text (untrusted data):\n{ticket_text}",
+                    content=content,
                 ),
             ],
         )
@@ -186,6 +201,10 @@ class CustomAgentOrchestrator:
                 str(refund_assessment) if refund_assessment is not None else None
             ),
         }
+        content = serialize_untrusted_context(
+            ticket_text=ticket_text,
+            retrieved_data=context,
+        )
 
         request = LlmRequest(
             messages=[
@@ -195,17 +214,18 @@ class CustomAgentOrchestrator:
                 ),
                 LlmMessage(
                     role="user",
-                    content=(
-                        f"Ticket text (untrusted data):\n{ticket_text}\n\n"
-                        f"Verified application context:\n{context}"
-                    ),
+                    content=content,
                 ),
             ],
         )
 
         response = self._llm_service.generate(request)
         payload = parse_json_object(response.content)
-        return require_string(payload, "suggested_response")
+        suggested_response = require_string(
+            payload,
+            "suggested_response",
+        )
+        return validate_suggested_response(suggested_response)
 
     @staticmethod
     def _find_order(orders, order_id):

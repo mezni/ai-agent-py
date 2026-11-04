@@ -26,3 +26,29 @@ class ApprovalAuthorizationService:
 
         if actor.actor_id == requester_id:
             raise AuthorizationError("A requester cannot approve their own action.")
+
+    def require_request_authority(
+        self,
+        *,
+        actor: AuthenticatedActor,
+        customer_id: str,
+    ) -> None:
+        self._authorization_service.require_permission(
+            actor,
+            Permission.PROCESS_TICKET,
+        )
+        self._authorization_service.require_customer_scope(
+            actor,
+            customer_id,
+        )
+
+    def require_customer_scope(
+        self,
+        *,
+        actor: AuthenticatedActor,
+        customer_id: str,
+    ) -> None:
+        self._authorization_service.require_customer_scope(
+            actor,
+            customer_id,
+        )

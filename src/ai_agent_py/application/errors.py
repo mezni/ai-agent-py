@@ -16,3 +16,19 @@ class LlmServiceError(ApplicationError):
 
 class InvalidLlmOutputError(ApplicationError):
     """Raised when LLM output fails application-level validation."""
+
+
+class ApprovalNotFoundError(ApplicationError):
+    """Raised when an approval request does not exist."""
+
+
+class ApprovalAlreadyDecidedError(ApplicationError):
+    """Raised when an approval is no longer pending."""
+
+
+class ApprovalExpiredError(ApplicationError):
+    """Raised when an approval request has expired."""
+
+
+class InvalidApprovalRequestError(ApplicationError):
+    """Raised when approval request data is invalid."""

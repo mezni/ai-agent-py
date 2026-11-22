@@ -38,9 +38,7 @@ def test_retry_then_success():
 
 
 def test_retry_exhausted():
-    operation = Mock(
-        side_effect=APIConnectionError(request=None)
-    )
+    operation = Mock(side_effect=APIConnectionError(request=None))
 
     with patch("ai_agent.application.retry.time.sleep"):
         with pytest.raises(LLMRetryExhaustedError):
@@ -53,9 +51,7 @@ def test_retry_exhausted():
 
 
 def test_non_retryable_error():
-    operation = Mock(
-        side_effect=ValueError("invalid input")
-    )
+    operation = Mock(side_effect=ValueError("invalid input"))
 
     with pytest.raises(LLMNonRetryableError):
         execute_with_retry(operation)

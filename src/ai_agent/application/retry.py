@@ -50,13 +50,9 @@ def execute_with_retry(
                 ) from error
 
             if attempt == max_attempts - 1:
-                raise LLMRetryExhaustedError(
-                    "Retry attempts exhausted."
-                ) from error
+                raise LLMRetryExhaustedError("Retry attempts exhausted.") from error
 
             delay = base_delay * (2**attempt)
             time.sleep(delay)
 
-    raise LLMRetryExhaustedError(
-        "Operation failed unexpectedly."
-    )
+    raise LLMRetryExhaustedError("Operation failed unexpectedly.")

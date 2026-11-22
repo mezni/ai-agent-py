@@ -246,3 +246,42 @@ response parsing, and business validation.
 
 ### Next Steps
 Function calling and tool schemas.
+
+
+## Day 73 — Function Calling and Tool Schemas
+
+### Component/Step
+Tool Calling and Tool Execution
+
+### Goal
+Enable the LLM to request controlled application tools.
+
+### Problem/Friction
+The LLM cannot retrieve real application data
+or execute application functions without
+a controlled integration.
+
+### Solution & Trade-offs
+- Implemented get_order_status tool.
+- Created function tool schema.
+- Introduced tool allowlist.
+- Implemented tool executor.
+- Validated arguments with Pydantic.
+- Integrated tool calling with Responses API.
+- Created tool-calling loop.
+- Tested tool execution independently.
+- Introduced tool security fundamentals.
+- Used a mock order database for simplicity.
+- Tool orchestration and execution limits remain
+  areas for improvement.
+
+### Active Work
+LLM Engineering — Tool Integration.
+
+### Code State
+LLM can request an order lookup and receive
+application-provided data.
+
+### Next Steps
+Tool orchestration, multiple tools,
+execution limits, and control flow.

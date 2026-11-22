@@ -1,58 +1,26 @@
-from dataclasses import dataclass
-
 import openai
 from openai import OpenAI
 
 from ai_agent.config import settings
-
-
-@dataclass(frozen=True)
-class Usage:
-    input_tokens: int
-    output_tokens: int
-    total_tokens: int
-
-
-@dataclass(frozen=True)
-class ProviderResponse:
-    text: str
-    usage: Usage
+from ai_agent.domain.models import ModelRequest, ModelResponse
 
 
 class OpenAIProvider:
-
-    def __init__(self):
-        self.client = OpenAI(
+    def __init__(self, client: OpenAI | None = None):
+        self.client = client or OpenAI(
             api_key=settings.openai_api_key,
             timeout=30.0,
             max_retries=2,
         )
 
-    def generate(self, message: str) -> str:
-        return self._create_response(message).output_text
+    def generate(self, request: ModelRequest) -> ModelResponse:
 
-    def generate_with_usage(self, message: str) -> ProviderResponse:
-        response = self._create_response(message)
-        return ProviderResponse(
-            text=response.output_text,
-            usage=self.extract_usage(response),
-        )
-
-    @staticmethod
-    def extract_usage(response: object) -> Usage:
-        usage = response.usage
-        return Usage(
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
-        )
-
-    def _create_response(self, message: str):
         try:
-            return self.client.responses.create(
-                model=settings.openai_model,
-                instructions="You are a helpful assistant.",
-                input=message,
+            response = self.client.responses.create(
+                model=request.model or settings.openai_model,
+                instructions=request.instructions,
+                input=request.message,
+                max_output_tokens=request.max_output_tokens,
             )
 
         except openai.AuthenticationError as exc:
@@ -62,6 +30,17 @@ class OpenAIProvider:
             raise RuntimeError("Provider connection failed") from exc
 
         except openai.APIStatusError as exc:
-            raise RuntimeError(
-                f"Provider returned HTTP {exc.status_code}"
-            ) from exc
+            raise RuntimeError(f"Provider returned HTTP {exc.status_code}") from exc
+
+        usage = response.usage
+
+        input_tokens = usage.input_tokens if usage else 0
+        output_tokens = usage.output_tokens if usage else 0
+
+        return ModelResponse(
+            text=response.output_text,
+            model=response.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        )

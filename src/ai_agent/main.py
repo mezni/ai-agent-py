@@ -1,37 +1,19 @@
-import os
-
-from dotenv import load_dotenv
-from openai import OpenAI
-
-
-class CustomerSupportAssistant:
-    def __init__(self, client: OpenAI, model: str | None = None):
-        self.client = client
-        self.model = model or os.environ.get("OPENAI_MODEL", "gpt-6-luna")
-
-    def answer(self, message: str) -> str:
-        response = self.client.responses.create(
-            model=self.model,
-            instructions=(
-                "You are a helpful customer support assistant. "
-                "Provide clear and concise answers."
-            ),
-            input=message,
-        )
-
-        return response.output_text
+from ai_agent.application.assistant import CustomerSupportAssistant
+from ai_agent.providers.openai_provider import OpenAIProvider
 
 
 def main():
-    load_dotenv()
 
-    client = OpenAI()
+    model_client = OpenAIProvider()
 
-    assistant = CustomerSupportAssistant(client)
+    assistant = CustomerSupportAssistant(model_client=model_client)
 
-    response = assistant.answer("My order #4821 has not arrived. Can you help?")
+    response = assistant.answer("My order #4821 has not arrived.")
 
-    print(response)
+    print(response.text)
+
+    print(f"Input tokens: {response.input_tokens}")
+    print(f"Output tokens: {response.output_tokens}")
 
 
 if __name__ == "__main__":

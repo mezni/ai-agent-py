@@ -63,3 +63,42 @@ Provider integration implemented.
 - Reusable provider-independent model client
 - Prompt management
 - Structured outputs
+
+
+## Day 3 — Reusable Model Client
+
+### Goal
+Decouple the application from LLM providers.
+
+### Problem
+The assistant was tightly coupled to OpenAI.
+Provider switching and unit testing were harder.
+
+### Solution
+Introduced:
+- ModelClient Protocol
+- ModelRequest
+- ModelResponse
+- OpenAIProvider adapter
+- Dependency injection
+
+### Concepts Learned
+- Abstraction
+- Structural typing
+- Protocol
+- Dependency inversion
+- Dependency injection
+- Adapter pattern
+- Composition root
+
+### Trade-offs
+Introduced additional abstraction and code.
+Improved testing and provider flexibility.
+
+### Code State
+Provider-independent assistant implemented.
+
+### Next Steps
+- Prompt engineering
+- Prompt templates
+- Prompt versioning

@@ -9,9 +9,7 @@ def main() -> None:
         max_tool_calls=10,
     )
 
-    answer = agent.run(
-        "Where is my order #4821, and how long does shipping take?"
-    )
+    answer = agent.run("Where is my order #4821, and how long does shipping take?")
 
     print(answer)
 

@@ -31,18 +31,14 @@ class AgentOrchestrator:
 
         self._registry = create_registry()
 
-        self._dispatcher = ToolDispatcher(
-            self._registry
-        )
+        self._dispatcher = ToolDispatcher(self._registry)
 
         self._max_turns = max_turns
         self._max_tool_calls = max_tool_calls
 
     def run(self, user_message: str) -> str:
         if not user_message.strip():
-            raise ValueError(
-                "User message cannot be empty."
-            )
+            raise ValueError("User message cannot be empty.")
 
         response = self._client.responses.create(
             model=os.environ["OPENAI_MODEL"],
@@ -66,21 +62,14 @@ Rules:
 
         for turn in range(self._max_turns):
             tool_calls = [
-                item
-                for item in response.output
-                if item.type == "function_call"
+                item for item in response.output if item.type == "function_call"
             ]
 
             if not tool_calls:
                 return response.output_text
 
-            if (
-                total_tool_calls + len(tool_calls)
-                > self._max_tool_calls
-            ):
-                raise AgentOrchestrationError(
-                    "Maximum tool-call limit exceeded."
-                )
+            if total_tool_calls + len(tool_calls) > self._max_tool_calls:
+                raise AgentOrchestrationError("Maximum tool-call limit exceeded.")
 
             tool_outputs = []
 
@@ -135,6 +124,4 @@ Do not invent information.
                 tools=self._registry.schemas(),
             )
 
-        raise AgentOrchestrationError(
-            "Maximum orchestration turns exceeded."
-        )
+        raise AgentOrchestrationError("Maximum orchestration turns exceeded.")

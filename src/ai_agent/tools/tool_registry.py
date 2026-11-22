@@ -28,25 +28,18 @@ class ToolRegistry:
 
     def register(self, tool: ToolDefinition) -> None:
         if tool.name in self._tools:
-            raise ValueError(
-                f"Tool already registered: {tool.name}"
-            )
+            raise ValueError(f"Tool already registered: {tool.name}")
 
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> ToolDefinition:
         if name not in self._tools:
-            raise ValueError(
-                f"Unsupported tool: {name}"
-            )
+            raise ValueError(f"Unsupported tool: {name}")
 
         return self._tools[name]
 
     def schemas(self) -> list[dict]:
-        return [
-            tool.schema
-            for tool in self._tools.values()
-        ]
+        return [tool.schema for tool in self._tools.values()]
 
     def names(self) -> list[str]:
         return list(self._tools.keys())

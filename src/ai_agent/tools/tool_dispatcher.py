@@ -24,24 +24,16 @@ class ToolDispatcher:
 
             parsed_arguments = json.loads(arguments)
 
-            validated_arguments = (
-                definition.arguments_model.model_validate(
-                    parsed_arguments
-                )
+            validated_arguments = definition.arguments_model.model_validate(
+                parsed_arguments
             )
 
-            result = definition.handler(
-                **validated_arguments.model_dump()
-            )
+            result = definition.handler(**validated_arguments.model_dump())
 
             return result
 
         except (ValueError, ValidationError) as exc:
-            raise ToolExecutionError(
-                "Invalid tool request."
-            ) from exc
+            raise ToolExecutionError("Invalid tool request.") from exc
 
         except Exception as exc:
-            raise ToolExecutionError(
-                "Tool execution failed."
-            ) from exc
+            raise ToolExecutionError("Tool execution failed.") from exc

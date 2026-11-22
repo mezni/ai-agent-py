@@ -20,14 +20,9 @@ def search_faq(query: str) -> dict:
     matches = []
 
     for faq in FAQS:
-        searchable_text = (
-            faq["question"] + " " + faq["answer"]
-        ).lower()
+        searchable_text = (faq["question"] + " " + faq["answer"]).lower()
 
-        score = sum(
-            word in searchable_text
-            for word in query_words
-        )
+        score = sum(word in searchable_text for word in query_words)
 
         if score > 0:
             matches.append(

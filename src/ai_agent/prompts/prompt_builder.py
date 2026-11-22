@@ -1,13 +1,15 @@
-from ai_agent.prompts.ticket_prompts import (
-    TICKET_CLASSIFICATION_PROMPT,
-)
+from ai_agent.prompts.prompt_registry import create_registry
 
 
-def build_ticket_classification_prompt(
-    ticket: str,
-) -> str:
-
+def build_ticket_classification_prompt(ticket: str) -> str:
     if not ticket.strip():
-        raise ValueError("Ticket cannot be empty.")
+        raise ValueError("Ticket cannot be empty")
 
-    return TICKET_CLASSIFICATION_PROMPT.format(ticket=ticket)
+    registry = create_registry()
+
+    template = registry.get(
+        name="ticket_classification",
+        version="1.0.0",
+    )
+
+    return template.render(ticket=ticket)

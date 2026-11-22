@@ -142,3 +142,36 @@ Prompt module and prompt builder implemented.
 - Prompt templates
 - Prompt versioning
 - Structured prompt management
+
+
+## Day 70 — Prompt Templates and Versioning
+
+### Component/Step
+Prompt Template and Version Management
+
+### Goal
+Create reusable and versioned prompt templates.
+
+### Problem/Friction
+Prompts were hardcoded in Python, making reuse,
+testing, modification, and traceability difficult.
+
+### Solution & Trade-offs
+- Created PromptTemplate abstraction.
+- Introduced prompt metadata.
+- Added prompt registry.
+- Added ticket classification prompt v1 and v2.
+- Added unit tests for rendering, registry, and prompt builder.
+- Used Git for prompt version history.
+- Chose Python-based templates over external prompt
+  management platforms to reduce complexity.
+
+### Active Work
+LLM Engineering — Prompt Management.
+
+### Code State
+Reusable and versioned ticket classification prompts
+with unit tests.
+
+### Next Steps
+Structured outputs and Pydantic validation.

@@ -102,3 +102,43 @@ Provider-independent assistant implemented.
 - Prompt engineering
 - Prompt templates
 - Prompt versioning
+
+## Day 4 — Prompt Engineering Fundamentals
+
+### Goal
+Learn to design and test effective LLM prompts.
+
+### Problem
+Generic model responses may not meet application
+requirements or produce consistent outputs.
+
+### Solution
+Introduced prompt engineering:
+- Role
+- Task
+- Context
+- Constraints
+- Examples
+- Output specification
+
+Separated prompt templates from application logic
+and created a prompt builder.
+
+### Concepts Learned
+- Zero-shot prompting
+- Few-shot prompting
+- Prompt decomposition
+- Prompt injection
+- Prompt experimentation
+
+### Trade-offs
+Prompt complexity can improve guidance but increase
+token consumption and maintenance.
+
+### Code State
+Prompt module and prompt builder implemented.
+
+### Next Steps
+- Prompt templates
+- Prompt versioning
+- Structured prompt management

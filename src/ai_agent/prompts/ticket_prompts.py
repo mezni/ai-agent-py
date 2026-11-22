@@ -1,6 +1,5 @@
 from ai_agent.prompts.prompt_template import PromptTemplate
 
-
 TICKET_CLASSIFICATION_V1 = PromptTemplate(
     name="ticket_classification",
     version="1.0.0",

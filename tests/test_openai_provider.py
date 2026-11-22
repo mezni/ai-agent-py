@@ -1,7 +1,7 @@
 from unittest.mock import Mock
 
-from ai_agent.providers.openai_provider import OpenAIProvider
 from ai_agent.domain.models import ModelRequest
+from ai_agent.providers.openai_provider import OpenAIProvider
 
 
 def test_openai_provider_normalizes_response():

@@ -208,3 +208,41 @@ Pydantic and structured-output experiment.
 
 ### Next Steps
 Output parsing, validation failures, and recovery.
+
+
+## Day 72 — Output Parsing and Error Handling
+
+### Component/Step
+LLM Response Parsing and Recovery
+
+### Goal
+Implement predictable handling of LLM response failures.
+
+### Problem/Friction
+LLM responses and provider calls can fail due to
+timeouts, rate limits, refusals, incomplete responses,
+parsing errors, and business validation errors.
+
+### Solution & Trade-offs
+- Introduced application-level error classes.
+- Created response parser.
+- Added refusal and incomplete response handling.
+- Added business validation rules.
+- Introduced exponential backoff retry policy.
+- Classified retryable and non-retryable errors.
+- Added unit tests for retry behavior.
+- Integrated retry, parsing, and business validation.
+- Avoided SDK retry duplication in the experiment.
+- Limited retries to transient provider failures.
+- Parsing and business-validation recovery remain
+  controlled failure paths for future improvements.
+
+### Active Work
+LLM Engineering — Reliability.
+
+### Code State
+LLM classification pipeline with controlled retries,
+response parsing, and business validation.
+
+### Next Steps
+Function calling and tool schemas.

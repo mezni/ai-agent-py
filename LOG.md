@@ -175,3 +175,36 @@ with unit tests.
 
 ### Next Steps
 Structured outputs and Pydantic validation.
+
+## Day 71 — Structured Outputs and Pydantic
+
+### Component/Step
+LLM Structured Output Contract
+
+### Goal
+Ensure LLM output follows a predictable data structure.
+
+### Problem/Friction
+LLM free-form text is unreliable for direct consumption
+by application logic and downstream services.
+
+### Solution & Trade-offs
+- Created TicketClassification Pydantic model.
+- Used Literal for supported categories.
+- Applied strict type validation.
+- Rejected unexpected fields.
+- Generated JSON Schema from Pydantic.
+- Used OpenAI structured output parsing.
+- Tested validation locally without API calls.
+- Structured outputs improve consistency but do not
+  guarantee semantic correctness.
+
+### Active Work
+LLM Engineering — Structured Outputs.
+
+### Code State
+Validated ticket classification contract with
+Pydantic and structured-output experiment.
+
+### Next Steps
+Output parsing, validation failures, and recovery.

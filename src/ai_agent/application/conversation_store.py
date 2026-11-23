@@ -7,6 +7,7 @@ from ai_agent.domain.conversation import (
     Message,
     MessageRole,
 )
+from ai_agent.domain.memory import MemoryFact
 
 
 class ConversationStore:
@@ -53,6 +54,22 @@ class ConversationStore:
                 CREATE INDEX IF NOT EXISTS
                 idx_messages_conversation
                 ON messages(conversation_id);
+
+                CREATE TABLE IF NOT EXISTS long_term_memories (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    memory_key TEXT NOT NULL,
+                    memory_value TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+
+                    UNIQUE(owner_id, memory_key)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_memory_owner
+                ON long_term_memories(owner_id);
             """)
 
     def create_conversation(self, conversation: Conversation):
@@ -172,3 +189,74 @@ class ConversationStore:
             summary=row["summary"],
             facts=json.loads(row["facts"]),
         )
+
+
+    def save_fact(self, owner_id: str, fact: MemoryFact):
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO long_term_memories (
+                    id,
+                    owner_id,
+                    memory_key,
+                    memory_value,
+                    confidence,
+                    source,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+
+                ON CONFLICT(owner_id, memory_key)
+                DO UPDATE SET
+                    memory_value = excluded.memory_value,
+                    confidence = excluded.confidence,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    fact.id,
+                    owner_id,
+                    fact.key,
+                    fact.value,
+                    fact.confidence,
+                    fact.source,
+                    fact.created_at,
+                    fact.updated_at,
+                ),
+            )
+
+    def get_facts(self, owner_id: str) -> list[MemoryFact]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM long_term_memories
+                WHERE owner_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (owner_id,),
+            ).fetchall()
+
+        return [
+            MemoryFact(
+                id=row["id"],
+                key=row["memory_key"],
+                value=row["memory_value"],
+                confidence=row["confidence"],
+                source=row["source"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    def delete_fact(self, owner_id: str, key: str):
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM long_term_memories
+                WHERE owner_id = ? AND memory_key = ?
+                """,
+                (owner_id, key),
+            )

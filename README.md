@@ -2,7 +2,8 @@
 
 A Python customer support agent built as a staged LLM engineering project. The codebase
 progresses from a single provider-backed assistant to layered components for prompts,
-structured output, tool orchestration, conversation state, and long-term memory.
+structured output, tool orchestration, conversation state, long-term memory, and response
+streaming.
 
 Python 3.12+ and `uv` are required.
 
@@ -50,7 +51,7 @@ The wider application is organized into these layers:
 | Layer | Responsibility |
 | --- | --- |
 | Entry point | Configure and run the application |
-| Application services | Coordinate requests, retries, parsing, tools, conversations, and memory |
+| Application services | Coordinate requests, retries, parsing, tools, conversations, memory, and streaming |
 | Domain models | Define shared request, response, ticket, conversation, and memory data |
 | Prompts | Build and version ticket classification prompts |
 | Providers | Adapt provider-specific APIs to the `ModelClient` contract |
@@ -125,6 +126,34 @@ The Day 76 design is documented in `docs/SUMMARY.md`. Implemented tests cover me
 validation, extraction, retrieval, restart persistence, duplicate updates, and manager
 behavior with fake collaborators. There is no dedicated `LLMMemorySummarizer` test yet.
 
+## Streaming Responses (Lesson Day 73)
+
+Day 73 adds incremental response delivery so users see generated text as chunks arrive
+instead of waiting for the complete model response. Streaming improves perceived
+responsiveness; it does not necessarily reduce total generation time or token cost.
+
+| Component | File | Current state |
+| --- | --- | --- |
+| `ModelClient.stream()` | `src/ai_agent/application/model_client.py` | Declares an `Iterator[str]` chunk stream |
+| `OpenAIProvider.stream()` | `src/ai_agent/providers/openai_provider.py` | Partial implementation; still needs event iteration, yields, and provider error handling |
+| `Assistant.ask_stream()` | `src/ai_agent/application/assistant.py` | Relays chunks from the model client |
+| Streaming tests | `tests/application/test_streaming.py` | Verify chunk delivery and reconstruction with a fake client |
+
+Provider-specific event handling belongs in `providers/`, while the application layer depends
+only on the `ModelClient` contract. The non-streaming `CustomerSupportAssistant.answer()` path
+is preserved. Partially streamed JSON must not be used as a trusted classification result;
+collect, parse, and validate the complete response first.
+
+Production streaming also needs cancellation, connection and read timeouts, TTFT and
+completion observability, bounded buffers for backpressure, sanitized error messages, and
+logging that avoids sensitive generated content.
+
+The current streaming implementation is incomplete: the provider method does not import
+`Iterator`, uses undefined `self.model`, and does not iterate or yield events. Its annotation
+currently breaks full-suite collection. The new string-based `ModelClient` contract also
+conflicts with the existing `ModelRequest`/`ModelResponse` interface used by the rest of the
+application.
+
 ## Project Layout
 
 ```text
@@ -144,11 +173,12 @@ LOG.md               # Development log
 
 ## Verification
 
-The full test suite currently reports `52 passed` with `uv run pytest -q`. Conversation and
-memory tests use temporary SQLite databases and fake collaborators, so they require no API
-credentials or live model calls. Changed implementation files pass Ruff; repository-wide
-linting still reports pre-existing findings in unrelated modules. No static typechecker is
-configured.
+`uv run pytest tests/application/test_streaming.py -q` reports `2 passed`. The full suite
+currently fails collection because `OpenAIProvider.stream()` references `Iterator` without
+importing it. Conversation and memory tests use temporary SQLite databases and fake
+collaborators, so they require no API credentials or live model calls. Repository-wide Ruff
+reports the streaming errors and pre-existing findings in unrelated modules. No static
+typechecker is configured.
 
 ## Documentation
 

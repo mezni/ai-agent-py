@@ -2051,3 +2051,200 @@ flowchart TD
     D --> C[Assemble relevant context]
 ```
 
+## Day 12 — Streaming Responses (Lesson Day 73)
+
+Level: Intermediate · 2 hours
+Prerequisite: Day 72 completed
+Topic: **Incremental LLM response delivery**
+Project: **ai-agent-py**
+
+### Problem we are solving
+
+The existing application follows a synchronous request path: the assistant calls the model
+client, the model client calls the provider, and the user receives nothing until the provider
+returns a complete response. For a support-ticket assistant, this creates unnecessary
+perceived latency even when the model is already producing useful text.
+
+```text
+User Request
+    |
+    v
+Assistant
+    |
+    v
+Model Client
+    |
+    v
+LLM Provider
+    |
+    v
+Complete Response
+    |
+    v
+Return to User
+```
+
+The goal is to expose incremental output without replacing the non-streaming path:
+
+```text
+User Request
+    |
+    v
+Assistant
+    |
+    v
+Model Client
+    |
+    v
+LLM Provider
+    |
+    +---- Chunk 1 ----> Client
+    |
+    +---- Chunk 2 ----> Client
+    |
+    +---- Chunk 3 ----> Client
+    |
+    +---- Chunk 4 ----> Client
+    |
+    v
+Stream Completed
+```
+
+Streaming improves perceived responsiveness. It does not necessarily reduce total generation
+time or token cost.
+
+### Steps
+
+1. **Diagnose the synchronous flow** — identify that the user waits for the complete provider
+   response before any output is displayed.
+2. **Learn the streaming vocabulary** — distinguish streams, chunks, tokens, time to first
+   token, inter-token latency, completion, interruption, and backpressure.
+3. **Define the target architecture** — keep provider-specific streaming logic in
+   `providers/` and expose a consistent interface to the application layer.
+4. **Extend `ModelClient`** — add a `stream()` operation that returns an iterator of text
+   chunks while preserving the existing non-streaming operation.
+5. **Implement provider streaming** — request a streamed Responses API result, select
+   `response.output_text.delta` events, yield non-empty deltas, and raise on error events.
+6. **Expose streaming through the assistant** — add `Assistant.ask_stream()` as a thin
+   generator over the model client while retaining `Assistant.ask()`.
+7. **Test without network access** — use a fake model client to verify chunk delivery and
+   reconstruction of the complete response.
+8. **Review production concerns** — handle errors, cancellation, timeouts, observability,
+   security, logging, backpressure, and final-output validation.
+9. **Verify and document** — run the streaming tests, full suite, linter, and update project
+   documentation.
+
+### Notes
+
+**Core concepts:**
+
+| Concept | Explanation |
+| --- | --- |
+| Streaming | Receiving generated output incrementally |
+| Chunk | A piece of generated text or other output |
+| Token | A unit of text processed by the model |
+| Time to First Token (TTFT) | Time until the first generated token arrives |
+| Inter-token latency | Time between generated tokens |
+| Stream completion | Signal that generation has finished |
+| Stream interruption | Generation stops before completion |
+| Backpressure | Handling a consumer that cannot process chunks quickly enough |
+
+**Architecture boundary:** the application layer should depend on the `ModelClient` contract,
+not provider event names. The provider translates streamed API events into text chunks, and
+the assistant relays those chunks to the caller. The existing non-streaming path remains
+available for code that needs a complete, structured result.
+
+**Provider event handling:**
+
+1. Call the provider with `stream=True`.
+2. Iterate provider events as generation progresses.
+3. Yield text from `response.output_text.delta` events.
+4. Raise a controlled error for provider error events.
+5. Treat an unexpected end of stream as incomplete rather than successful.
+
+**Practical lab:** stream a ticket-triage explanation for the order `#4821` support ticket.
+The output may explain that the order has not arrived, that status will be checked, that the
+ticket is classified as `order_status`, and that a lookup is required. Exact wording depends
+on the prompt and model.
+
+**Important for ticket triage:** never treat partially streamed JSON as a trusted
+classification result. Collect the complete response, parse it, validate its schema, and only
+then allow downstream business logic to use it.
+
+**Production considerations:**
+
+| Concern | What to implement |
+| --- | --- |
+| Error handling | Handle provider errors during generation |
+| Cancellation | Stop generation when the client disconnects |
+| Timeouts | Configure connection and read timeouts |
+| Observability | Track TTFT, total duration, and completion status |
+| Security | Do not expose internal provider errors to clients |
+| Logging | Avoid logging sensitive generated content |
+| Backpressure | Avoid unbounded buffering of chunks |
+| Output validation | Validate the final assembled output where required |
+
+**Current implementation status:** four local commits add the streaming interface, a partial
+OpenAI provider stream method, an `Assistant` streaming wrapper, and fake-client tests. The
+streaming tests pass (`2 passed`), but the provider implementation is incomplete: it does not
+import `Iterator`, uses undefined `self.model`, and does not iterate or yield provider events.
+Its annotation currently causes full-suite collection to fail with `NameError: Iterator is not
+defined`. The new string-based `ModelClient` contract also conflicts with the existing
+`ModelRequest`/`ModelResponse` path used by `CustomerSupportAssistant` and `OpenAIProvider`.
+Those issues must be fixed before this lesson is complete.
+
+**Definition of done:**
+
+- [x] Understand streaming, chunks, TTFT, and latency
+- [x] Add a streaming operation to `ModelClient`
+- [~] Implement provider streaming
+- [x] Expose streaming through `Assistant`
+- [x] Write and pass streaming unit tests with a fake provider
+- [x] Preserve non-streaming functionality
+- [ ] Run the full suite and Ruff successfully
+- [ ] Update documentation and push completed changes
+
+### Diagrams
+
+```mermaid
+flowchart LR
+    U[User request] --> A[Assistant]
+    A --> M[ModelClient contract]
+    M --> P[OpenAIProvider]
+    P --> S[Stream chunks]
+    S --> C[Stream consumer]
+    P -. Provider error .-> E[Controlled error path]
+```
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Assistant
+    participant Provider
+    participant LLM as LLM provider
+
+    Client->>Assistant: ask_stream(prompt)
+    Assistant->>Provider: stream(prompt)
+    Provider->>LLM: create stream=True
+    loop Generated output
+        LLM-->>Provider: output_text.delta event
+        Provider-->>Assistant: text chunk
+        Assistant-->>Client: text chunk
+    end
+    LLM-->>Provider: completion event
+    Provider-->>Assistant: stream end
+    Assistant-->>Client: stream end
+```
+
+```mermaid
+flowchart TD
+    A[Start stream] --> B{Next event}
+    B -- Text delta --> C[Chunk non-empty?]
+    C -- Yes --> D[Yield chunk]
+    C -- No --> B
+    D --> B
+    B -- Complete --> E[Finish successfully]
+    B -- Error --> F[Raise controlled error]
+    B -- Unexpected end --> G[Treat as incomplete]
+```
+

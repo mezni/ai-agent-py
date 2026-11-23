@@ -455,3 +455,55 @@ repository-wide linting still reports pre-existing findings in unrelated modules
 - Run the three-conversation lab covering persistence, duplicate updates, corrections,
   clarification, and invalid extraction.
 - Integrate the memory pipeline with `ConversationManager`, `AgentOrchestrator`, and the CLI.
+
+
+## Day 73 — Streaming Responses
+
+### Component/Step
+Incremental Response Delivery — ModelClient, OpenAIProvider, and Assistant streaming
+
+### Goal
+Deliver LLM output incrementally so users receive generated text as it is produced.
+
+### Prerequisite
+Day 72 completed.
+
+### Problem/Friction
+Users wait for a complete LLM response before seeing any output. For support tickets this
+creates unnecessary perceived latency even when useful text is already available.
+
+### Solution
+Add a `ModelClient.stream()` interface, provider-level streaming, an assistant-level
+`ask_stream()` wrapper, and fake-client tests for chunk delivery and reconstruction.
+
+### Trade-offs
+Streaming improves perceived responsiveness but does not necessarily reduce total generation
+time or token cost. It adds error handling, cancellation, timeout, observability, security,
+logging, backpressure, and final-output validation concerns.
+
+### Concepts
+Streaming, chunks, tokens, Time to First Token (TTFT), inter-token latency, stream completion,
+stream interruption, and backpressure.
+
+### Architecture
+User request → Assistant → Model Client → LLM Provider → stream chunks → client. Provider
+event handling stays in `providers/`; the application depends only on the `ModelClient`
+contract. The non-streaming path remains available.
+
+### Code State
+Four commits add the streaming interface, a partial `OpenAIProvider.stream()` method,
+`Assistant.ask_stream()`, and `tests/application/test_streaming.py`. The provider method is
+incomplete: it does not import `Iterator`, uses undefined `self.model`, and does not iterate
+or yield response events. The new string-based `ModelClient` contract also conflicts with the
+existing `ModelRequest`/`ModelResponse` path.
+
+`uv run pytest tests/application/test_streaming.py -q` → `2 passed`. Full-suite collection
+currently fails with `NameError: Iterator is not defined` from `openai_provider.py`.
+Repository-wide Ruff reports the streaming errors plus pre-existing findings.
+
+### Next Steps
+- Import `Iterator` and complete provider event iteration and yielding.
+- Handle provider error events, incomplete streams, cancellation, and provider exceptions.
+- Reconcile `ModelClient` with the application's `ModelRequest`/`ModelResponse` contract.
+- Wire streaming into the CLI or a transport that can flush chunks to users.
+- Add TTFT, duration, and completion-status observability without logging sensitive content.

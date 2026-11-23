@@ -44,3 +44,10 @@ class OpenAIProvider:
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
         )
+
+    def stream(self, prompt: str) -> Iterator[str]:
+        response_stream = self.client.responses.create(
+            model=self.model,
+            input=prompt,
+            stream=True,
+        )

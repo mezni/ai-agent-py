@@ -383,3 +383,75 @@ files pass Ruff; repository-wide linting retains pre-existing unrelated findings
 - Run the five-turn order `#4821` support lab.
 - Add automatic summarization when older messages leave the context window.
 - Add conversation/user scoping and production persistence policies.
+
+
+## Day 76 — Conversation Summarization and Long-Term Memory
+
+### Component/Step
+Long-Term Memory, Summarization, Fact Extraction, Retrieval, and Context Assembly
+
+### Goal
+Make stored conversation information compact, structured, owner-scoped, and retrievable so
+the agent can preserve important facts without repeatedly sending full conversation history.
+
+### Problem/Friction
+Message history grows until it is expensive or exceeds the context window. Basic conversation
+memory records a summary and facts, but it does not decide what is important, when to
+summarize, how to retrieve relevant facts, or how to correct duplicate memories.
+
+### Solution & Trade-offs
+- Added structured `MemoryFact` records with key, value, ID, confidence, source, and
+  timestamps instead of plain-text facts.
+- Added `LongTermMemory` grouping by owner ID.
+- Added `MemorySummarizer` and an LLM-backed implementation adapted to the existing
+  `ModelClient` contract.
+- Added deterministic ticket fact extraction for order ID, issue, and communication
+  preference.
+- Added an owner-scoped `long_term_memories` SQLite table with unique `(owner_id, memory_key)`
+  and upsert behavior.
+- Added keyword-based retrieval as a baseline before embeddings or vector search.
+- Added `MemoryManager` to coordinate summarization, extraction, persistence, and retrieval.
+- Left context assembly, automatic triggers, and orchestrator/CLI integration for later work.
+- Treat stored facts and summaries as untrusted data, never as instructions.
+
+### Active Work
+LLM Engineering — Conversation Summarization and Long-Term Memory.
+
+### Code State
+Documented in `docs/SUMMARY.md` and `README.md`; the core Day 76 memory components are
+implemented in six separate commits.
+
+Implemented modules:
+- `src/ai_agent/domain/memory.py`
+- `src/ai_agent/application/memory_summarizer.py`
+- `src/ai_agent/application/llm_memory_summarizer.py`
+- `src/ai_agent/application/memory_extractor.py`
+- `src/ai_agent/application/ticket_memory_extractor.py`
+- `src/ai_agent/application/memory_retriever.py`
+- `src/ai_agent/application/memory_manager.py`
+- `src/ai_agent/application/conversation_store.py` extended with long-term memory storage
+
+Tests:
+- `tests/domain/test_memory.py`
+- `tests/application/test_memory_extractor.py`
+- `tests/application/test_memory_retriever.py`
+- `tests/application/test_memory_manager.py`
+- `tests/application/test_conversation_store.py` extended with persistence and upsert tests
+
+There is no dedicated `tests/application/test_memory_summarizer.py`; `MemoryManager` tests use
+a fake summarizer and require no live model.
+
+Day 10 correction verified: `save_memory()` and `get_memory()` are methods on
+`ConversationStore`, and `conversation_memory` is initialized before use.
+
+Verification after implementation: `uv run pytest -q` → `52 passed`. Changed files pass Ruff;
+repository-wide linting still reports pre-existing findings in unrelated modules.
+
+### Next Steps
+- Add a dedicated `LLMMemorySummarizer` test with a fake `ModelClient`.
+- Connect relevant facts and updated summaries to context assembly.
+- Add owner authorization and explicit owner-isolation tests.
+- Add message-count or token-threshold triggers with incremental summarization.
+- Run the three-conversation lab covering persistence, duplicate updates, corrections,
+  clarification, and invalid extraction.
+- Integrate the memory pipeline with `ConversationManager`, `AgentOrchestrator`, and the CLI.

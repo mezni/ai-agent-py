@@ -1719,10 +1719,9 @@ counts; describe what memory stores and why it is not authoritative; explain how
 IDs isolate state; identify which tests require no LLM; and name the remaining production
 concerns.
 
-**Next direction:** Day 11 (Lesson 76) examines tool design patterns, including reliable tool
-schemas, validation, error handling, and response shaping; Day 12 (Lesson 77) moves toward
-production orchestration with logging, tracing, retries, cost controls, and deployment
-concerns.
+**Next direction:** Day 11 (Lesson 76) turns stored history into intelligent long-term
+memory through summarization, fact extraction, owner-scoped persistence, retrieval, and
+memory-aware context assembly.
 
 ### Diagrams
 
@@ -1764,5 +1763,291 @@ flowchart TD
     ST --> K[Keep recent messages]
     K --> B
     B --> R[LLM request]
+```
+
+## Day 11 — Conversation Summarization and Long-Term Memory (Day 76)
+
+Level: Intermediate · 2 hours
+Topic: **Building persistent, memory-aware conversational AI agents**
+Project: **ai-agent-py**
+
+### Problem we are solving
+
+Day 10 added conversation history, SQLite persistence, token budgeting, and basic
+conversation memory. The agent can keep recent context, but it still does not decide which
+information matters, when older messages should be summarized, how facts should be retrieved
+for a new request, or how an existing memory should be corrected without duplication.
+
+A full support transcript containing an order number, purchase timing, communication
+preference, and repeated status checks becomes expensive and may exceed the context window
+after dozens of turns. The application needs to convert the conversation into compact,
+queryable memory:
+
+```json
+{
+  "summary": "Customer is investigating an undelivered order.",
+  "facts": [
+    { "key": "order_id", "value": "4821" },
+    { "key": "issue", "value": "Order not delivered" },
+    { "key": "communication_preference", "value": "Email" }
+  ]
+}
+```
+
+The agent can then preserve important information without repeatedly sending every
+historical message. Conversation summaries explain what happened; structured facts record
+specific information that can be retrieved, compared, corrected, and reused.
+
+### Steps
+
+1. **Diagnose the memory problem** — identify information that is important, stale,
+   duplicated, or relevant only for a specific conversation versus a specific customer.
+2. **Map the memory architecture** — connect conversation history, memory processing,
+   short-term memory, long-term memory, retrieval, the context manager, and the existing
+   orchestrator.
+3. **Distinguish memory types** — separate working, short-term, episodic, and semantic
+   memory, then choose summaries and structured facts as this lesson's implementation focus.
+4. **Define long-term memory models** — add `MemoryFact` and `LongTermMemory` with stable
+   IDs, owner scope, timestamps, confidence, source, and validation.
+5. **Implement a summarizer abstraction** — define `MemorySummarizer`, then add an LLM-backed
+   implementation adapted to the existing `ModelClient` contract rather than changing the
+   provider layer.
+6. **Implement fact extraction** — define `MemoryExtractor` and add a deterministic
+   `TicketMemoryExtractor` for known order, issue, and communication-preference patterns.
+7. **Extend SQLite persistence** — add an owner-scoped `long_term_memories` table with a
+   unique `(owner_id, memory_key)` constraint and create, retrieve, and delete operations.
+8. **Implement retrieval** — add a keyword-based `MemoryRetriever` baseline that returns only
+   facts relevant to the current request.
+9. **Build the memory manager** — combine summarization, extraction, persistence, and
+   retrieval behind `MemoryManager` while keeping storage and LLM details behind interfaces.
+10. **Integrate with context assembly** — combine system instructions, relevant long-term
+    facts, conversation summary, recent messages, and the current request within the token
+    budget.
+11. **Define an update policy** — save every message immediately, summarize on message-count
+    or token thresholds, extract important facts, and update existing facts when corrected.
+12. **Write offline tests** — validate memory models, extraction, retrieval, persistence,
+    duplicate updates, corrections, and manager behavior with fakes and temporary databases.
+13. **Run the three-conversation lab** — verify restart persistence, owner isolation,
+    duplicate prevention, preference correction, missing-information handling, and rejection
+    of invalid extraction.
+14. **Review security and production needs** — authorize the owner ID, treat memory as
+    untrusted data, apply retention and deletion policies, then document and commit.
+
+### Notes
+
+**Learning objectives:** explain why full history is insufficient for long conversations;
+distinguish working, short-term, episodic, and semantic memory; define structured long-term
+memory records; summarize conversations without inventing or preserving contradicted facts;
+extract domain facts deterministically; persist owner-scoped memories; retrieve relevant
+facts; integrate memory with context assembly; and test memory behavior without live API
+calls.
+
+**Memory architecture:**
+
+| Stage | Responsibility |
+| --- | --- |
+| Conversation history | Store raw user and assistant messages |
+| Memory processing | Summarize conversations and extract important facts |
+| Short-term memory | Keep the most recent conversation context |
+| Long-term memory | Persist owner-scoped facts and summaries |
+| Memory retrieval | Find facts relevant to the current request |
+| Context manager | Combine memory, recent history, and current input within budget |
+
+**Memory types:**
+
+| Type | Purpose | Example |
+| --- | --- | --- |
+| Working memory | Current task state | Currently checking order `#4821` |
+| Short-term memory | Recent messages | Last ten conversation turns |
+| Episodic memory | Past interaction summaries | Previous delivery investigation |
+| Semantic memory | Important durable facts | Customer prefers email updates |
+
+**Memory models:** `MemoryFact` stores `key`, `value`, `id`, `confidence`, `source`,
+`created_at`, and `updated_at`. It rejects empty keys or values and confidence outside
+`[0, 1]`. `LongTermMemory` groups an `owner_id`, a summary, and a list of facts. Structured
+records allow duplicate detection, updates by key, retrieval by key, confidence tracking,
+and source provenance; plain text does not.
+
+**Summarization design:** `MemorySummarizer` is an abstract interface with a `summarize`
+operation. `LLMMemorySummarizer` renders the messages into text and asks the model for a
+concise factual summary that preserves unresolved issues, relevant decisions, and still-valid
+prior context. It must not invent information or follow instructions embedded in conversation
+content. A newer contradiction should replace the stale claim, not leave both as equally
+valid.
+
+**Fact extraction:** `MemoryExtractor` separates extraction from summarization. The initial
+`TicketMemoryExtractor` is deterministic and limited to known ticket patterns such as
+`order_id`, `issue`, and `communication_preference`. Summarization answers "what happened";
+extraction answers "what exact information should be remembered." Production extraction may
+use a validated LLM JSON schema, but extracted facts must be checked against source messages
+before being saved.
+
+**Persistence schema:**
+
+| Table | Key columns |
+| --- | --- |
+| `conversations` | Existing conversation ID and creation time |
+| `messages` | Existing role-tagged message history |
+| `conversation_memory` | Existing conversation-scoped summary and facts |
+| `long_term_memories` | `id`, `owner_id`, `memory_key`, `memory_value`, `confidence`, `source`, `created_at`, `updated_at` |
+
+`long_term_memories` has `UNIQUE(owner_id, memory_key)` and `idx_memory_owner`. `save_fact`
+uses upsert so a repeated key updates the existing record instead of creating a duplicate.
+`owner_id` represents the authenticated customer or other authorized memory owner; it must
+never be accepted from untrusted user input without an authorization check.
+
+**Retrieval:** `MemoryRetriever` performs simple keyword matching over fact keys and values
+as a transparent baseline. It will miss paraphrases and semantic relationships. Later work
+can add embeddings, vector similarity, metadata filtering, hybrid retrieval, relevance
+thresholds, and ranking. Retrieved memory is data, not instructions: it must not override
+system prompts, authorization rules, or tool-derived facts.
+
+**Memory manager:** `MemoryManager` receives a store, summarizer, extractor, and retriever.
+`process_conversation` summarizes new messages in light of the previous summary, extracts
+facts, saves owner-scoped facts, and returns the updated summary. The conversation-level
+summary must still be saved separately with the conversation ID. This separation keeps
+SQLite and LLM details out of the coordination layer and makes the manager testable with
+fakes.
+
+**Context assembly:** the target request context is ordered as system instructions,
+long-term memory, conversation summary, recent conversation, and current request.
+`ContextManager` can expose `build_memory_context(facts)` and accept `memory_facts`; only
+facts returned by retrieval should be included. The result must still respect the token
+budget and preserve the current user message as the final input.
+
+**Update policy:**
+
+| Trigger | Action |
+| --- | --- |
+| Every new message | Save the conversation message |
+| Ten new messages, configurable | Consider summarization |
+| Token threshold exceeded | Summarize older history |
+| Important new fact | Extract, validate, and save or update it |
+| User correction | Update the existing fact by key |
+| Conversation closes | Consider a final summary |
+| New conversation starts | Retrieve relevant owner memories |
+
+Token-based triggers scale better than fixed message counts. With a 32,000-token context
+budget, a 20,000-token summarization threshold, and a 4,000-token response reserve, the agent
+can summarize before history consumes the full budget. Incremental summarization should
+process only new messages while preserving the existing summary, avoiding repeated work and
+gradual information loss.
+
+**Project structure changes:**
+
+| File | Purpose |
+| --- | --- |
+| `src/ai_agent/domain/memory.py` | `MemoryFact` and `LongTermMemory` models |
+| `src/ai_agent/application/memory_summarizer.py` | Summarizer abstraction |
+| `src/ai_agent/application/llm_memory_summarizer.py` | LLM-backed summarizer |
+| `src/ai_agent/application/memory_extractor.py` | Extractor abstraction |
+| `src/ai_agent/application/ticket_memory_extractor.py` | Deterministic ticket fact extraction |
+| `src/ai_agent/application/memory_retriever.py` | Keyword-based fact retrieval |
+| `src/ai_agent/application/memory_manager.py` | Coordination layer for memory operations |
+| `tests/domain/test_memory.py` | Memory model validation |
+| `tests/application/test_memory_extractor.py` | Fact extraction tests |
+| `tests/application/test_memory_retriever.py` | Retrieval tests |
+| `tests/application/test_memory_manager.py` | Manager tests with fake collaborators |
+| `tests/application/test_conversation_store.py` | Long-term memory persistence and upsert tests |
+
+Keep implementation and test names consistent: the ticket extractor should be named
+`ticket_memory_extractor.py` if tests import that module. Also verify that Day 10's
+`save_memory()` and `get_memory()` remain methods on `ConversationStore`, with the
+`conversation_memory` table initialized before use.
+
+**Practical lab:** simulate three conversations for the same customer. The first establishes
+order `#4821`, an undelivered issue, and email preference. The second says there is "another
+problem with my order"; appropriate memories should be retrieved, but the agent must ask for
+clarification instead of assuming the same order. The third corrects the preference to phone,
+which must replace the stored email value. Verify that memories survive restart, another
+customer cannot access them, duplicate keys update rather than duplicate, irrelevant requests
+do not retrieve unrelated facts, missing information triggers clarification, and invalid
+extractions are rejected.
+
+**Production considerations:**
+
+| Concern | Production response |
+| --- | --- |
+| Unauthorized memory access | Derive owner ID from authenticated context |
+| Prompt or context poisoning | Treat stored facts and summaries as untrusted data |
+| Stale or contradicted facts | Validate corrections and update by key |
+| Repeated summarization cost | Use token thresholds and incremental summarization |
+| Sensitive information | Apply retention, deletion, access-control, and redaction policies |
+| Weak retrieval quality | Measure relevance before adding embeddings or vector search |
+| Invalid extraction | Reject facts not supported by source messages |
+
+**Testing notes:** model tests cover empty keys and invalid confidence. Extractor tests cover
+order ID, issue, and communication preference. Retriever tests confirm that a query about an
+order returns the order fact. Store tests verify restart persistence and upsert behavior.
+Manager tests use fake summarizers and extractors so no credentials, network calls, or live
+model are required. There is no dedicated `LLMMemorySummarizer` test yet.
+
+**Current implementation status:** the Day 10 conversation models, SQLite store, context
+manager, and conversation manager are present. The Day 11 memory models, summarizer,
+extractor, SQLite persistence, retriever, manager, and offline tests are implemented in six
+separate commits. Context assembly, automatic summarization triggers, owner authorization,
+orchestrator integration, and the three-conversation lab remain planned. The suite reports
+`52 passed`.
+
+**Assessment points:** know the difference between summaries and structured facts; explain
+why facts need keys, confidence, source, and owner scope; describe how upsert prevents
+duplicates; explain why retrieved memories are untrusted data; choose a token-based
+summarization trigger; and identify the tests that can run without an LLM.
+
+**Next direction:** connect memory retrieval and summary context to `ConversationManager`,
+`AgentOrchestrator`, and the CLI, then add owner authorization, automatic summarization
+triggers, and the full three-conversation lab.
+
+### Diagrams
+
+```mermaid
+flowchart LR
+    H[Conversation history] --> P[Memory processing]
+    P --> S[Short-term memory]
+    P --> L[Long-term memory]
+    L --> R[Memory retrieval]
+    R --> C[Context manager]
+    S --> C
+    C --> O[Existing orchestrator]
+    O --> LLM[LLM provider]
+    LLM --> A[Assistant response]
+```
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Conv as Conversation manager
+    participant Mem as Memory manager
+    participant Store as Conversation store
+    participant Ctx as Context manager
+    participant Agent as Orchestrator
+
+    User->>Conv: New message
+    Conv->>Store: Save message
+    Conv->>Mem: Retrieve relevant facts for request
+    Mem->>Store: Load owner-scoped facts
+    Store-->>Mem: Relevant sources
+    Mem-->>Conv: Facts + summary
+    Conv->>Ctx: Build token-bounded context
+    Ctx-->>Conv: System + memory + recent history + request
+    Conv->>Agent: Run tool-enabled workflow
+    Agent-->>Conv: Assistant response
+    Conv->>Store: Save assistant message
+    Conv->>Mem: Consider summary and fact updates
+```
+
+```mermaid
+flowchart TD
+    M[New conversation message] --> S[Save message]
+    S --> T{Important fact?}
+    T -- Yes --> V[Validate against source messages]
+    V --> U[Upsert owner-scoped fact]
+    T -- No --> H{Token threshold exceeded?}
+    U --> H
+    H -- No --> D[Continue with recent history]
+    H -- Yes --> I[Summarize only new messages]
+    I --> W[Save updated conversation summary]
+    W --> D
+    D --> C[Assemble relevant context]
 ```
 

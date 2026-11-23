@@ -2415,3 +2415,192 @@ flowchart TD
     A --> R[Validate status and completion]
 ```
 
+
+## Day 14 — Model Selection (Lesson Day 75)
+
+Level: Medium · 2 hours
+Stage: Stage 5, Day 75
+Topic: **Selecting the right LLM for the application**
+Project: **ai-agent-py**
+
+### Problem we are solving
+
+A ticket-triage system might receive 10,000 support tickets per day. Three candidate models
+could be described as high quality/medium latency/high cost/large context, good/low/low/medium,
+or very high/high/very high/very large. The most powerful model is not automatically the best
+choice.
+
+Classification may not need a large reasoning model. Complex refund decisions may need stronger
+reasoning. Customer-facing responses may need higher language quality. Sensitive enterprise
+workloads may require private deployment. The engineering problem is to satisfy application
+requirements while optimizing cost, performance, and reliability.
+
+### Steps
+
+1. **Define requirements** — set measurable targets for quality, latency, cost, capabilities,
+   deployment, and compliance before comparing models.
+2. **Identify candidate models** — compare a small/fast model, a general-purpose model, and an
+   advanced reasoning model without relying on names or general benchmarks.
+3. **Evaluate quality on representative data** — measure classification, extraction, reasoning,
+   instruction following, structured JSON, RAG correctness, and tool calling on the project's
+   own dataset.
+4. **Measure latency** — record TTFT, TTLT, inter-token latency, and end-to-end latency under
+   realistic load.
+5. **Estimate cost** — calculate input-token, output-token, cached-input, and feature charges
+   from expected volume.
+6. **Check context and capabilities** — ensure the request fits within the context window and
+   that the model supports every required capability.
+7. **Assess reliability** — review availability, error rates, timeouts, rate limits, output
+   consistency, provider stability, and version changes.
+8. **Check deployment and compliance** — validate cloud, self-hosted, or hybrid requirements
+   along with retention, residency, encryption, access control, audit, and data-processing terms.
+9. **Build the model registry** — represent each model's identity and capabilities in a frozen
+   `ModelDefinition`, register models centrally, and reject duplicates or unknown names.
+10. **Implement task-based selection** — map tasks such as classification, extraction, complex
+    reasoning, and customer responses to registered models through a deterministic selector.
+11. **Run the evaluation matrix** — use the same dataset, prompts, and criteria for all
+    candidates; reject models that fail mandatory requirements before optimizing cost.
+12. **Plan routing and monitoring** — route by measured task complexity, add fallback and
+    observability, and re-evaluate when requirements or model versions change.
+
+### Notes
+
+**Selection criteria:**
+
+| Dimension | What to evaluate |
+| --- | --- |
+| Quality | Task accuracy, reasoning, instruction following, JSON validity, RAG correctness, tool-calling accuracy |
+| Latency | TTFT, TTLT, inter-token latency, and full application latency |
+| Cost | Input/output tokens, cached inputs, model pricing, extra features, retries, and infrastructure |
+| Context window | Instructions + history + retrieved documents + current message + reserved output |
+| Capabilities | Text, structured output, tools, vision, audio, reasoning, embeddings, and streaming |
+| Reliability | Availability, errors, timeouts, rate limits, consistency, provider stability, and version changes |
+| Deployment | Cloud-hosted, self-hosted, or hybrid operation |
+| Security/compliance | Retention, residency, encryption, access controls, processing terms, sensitive data, and audits |
+
+General benchmarks do not prove fitness for `ai-agent-py`. Evaluate candidates against a
+representative business dataset.
+
+**Latency example:**
+
+| Model | TTFT | Total latency |
+| --- | --- | --- |
+| A | 400 ms | 2.1 sec |
+| B | 150 ms | 0.8 sec |
+| C | 900 ms | 4.5 sec |
+
+Low TTFT matters for interactive responses; total latency matters for complete structured
+results. Measure both under production-like conditions.
+
+**Cost formula:**
+
+`C = (T_i / 1,000,000) × P_i + (T_o / 1,000,000) × P_o`
+
+For 10,000 daily tickets, 1,000 average input tokens, 300 average output tokens, a $2 input
+price per million, and an $8 output price per million:
+
+- Daily input: `10,000 × 1,000 / 1,000,000 × $2 = $20`
+- Daily output: `10,000 × 300 / 1,000,000 × $8 = $24`
+- Illustrative daily total: `$44`
+- Illustrative 30-day total: `$1,320`
+
+This excludes retries, caching discounts, infrastructure, and other charges.
+
+**Context window:** the window must accommodate system instructions, conversation history,
+retrieved documents, the current user message, and reserved output. A larger window helps long
+conversations, large documents, RAG, and agent workflows, but it does not guarantee better
+answers and can increase cost and latency.
+
+**Proposed project requirements:** these are targets, not measured results.
+
+| Requirement | Target |
+| --- | --- |
+| Classification accuracy | At least 95% |
+| Structured output validity | At least 99% |
+| Average response latency | Under 2 seconds |
+| Cost | Within approved budget |
+| Tool calling | Required for supported workflows |
+| Deployment | Approved enterprise provider |
+| Human approval | Required before consequential actions |
+
+**Hypothetical evaluation matrix:**
+
+| Metric | Model A | Model B | Model C |
+| --- | --- | --- | --- |
+| Classification accuracy | 96% | 94% | 98% |
+| JSON validity | 99% | 97% | 99% |
+| Average latency | 1.2 s | 0.6 s | 3.0 s |
+| Cost per 1,000 tickets | $4 | $1 | $12 |
+
+Model A is the strongest initial candidate against the proposed 95% accuracy target: B is
+cheapest and fastest but misses quality targets, while C is highest quality but slower and more
+expensive.
+
+**Registry design:** a frozen `ModelDefinition` stores `name`, `provider`, `model_id`,
+streaming/tool-calling/structured-output flags, and `context_window`. A `ModelRegistry`
+registers unique models, retrieves them by name, and lists registered definitions. A
+`ModelSelector` maps task names to registered model names and raises on unconfigured tasks.
+
+Capability flags and context limits must come from verified provider documentation. The
+catalog's `YOUR_*_MODEL_ID` placeholders and `context_window=0` mean "unknown"; they must not be
+used as production values.
+
+**Module conflict:** `src/ai_agent/config.py` is a module while `src/ai_agent/config/` is an
+unimportable directory without `__init__.py`. Put `model_catalog.py` in an importable location or
+convert `config` into a real package before using it.
+
+**Routing:** a router can send simple tasks to a small model, medium tasks to a general model,
+and complex or ambiguous tasks to an advanced model or human review. Routing must be based on
+measured task performance and needs capability checks, cost limits, fallback, and observability.
+
+**Practical lab:** create `experiments/model-selection.md`, compare candidates on the same
+dataset with equivalent instructions and repeated trials, record quality/validity/latency/p95/
+token usage/cost/capabilities, identify mandatory-requirement failures, and document the selected
+model, rejected alternatives, known limitations, and fallback strategy.
+
+**Current implementation status:** documentation-only update. None of `ModelDefinition`,
+`ModelRegistry`, `ModelSelector`, `model_catalog.py`, the registry/selection tests, or
+`experiments/model-selection.md` exists yet. Model selection is not wired into the application.
+
+**Definition of done:**
+
+- [ ] Understand the eight model-selection criteria
+- [ ] Estimate cost from token volume and pricing
+- [ ] Define measurable acceptance criteria
+- [ ] Create `ModelDefinition`
+- [ ] Implement `ModelRegistry`
+- [ ] Implement `ModelSelector`
+- [ ] Register verified candidate models
+- [ ] Add registry and selection tests
+- [ ] Complete the model evaluation matrix
+- [ ] Document the final selection and fallback strategy
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    R[Requirements] --> C[Candidate models]
+    C --> K{Capabilities supported?}
+    K -- No --> X[Reject candidate]
+    K -- Yes --> D[Build evaluation dataset]
+    D --> E[Run evaluations]
+    E --> M[Measure quality, latency, and cost]
+    M --> A{Meets acceptance criteria?}
+    A -- No --> X
+    A -- Yes --> S[Select model]
+    S --> P[Production monitoring]
+```
+
+```mermaid
+flowchart LR
+    Q[Incoming request] --> RT{Model router}
+    RT -->|Simple task| SM[Small LLM]
+    RT -->|Medium task| GM[General LLM]
+    RT -->|Complex or high-risk| AM[Advanced LLM]
+    RT -->|Ambiguous or consequential| H[Human review]
+    SM --> V[Output validation]
+    GM --> V
+    AM --> V
+    V --> O[Application]
+```
+

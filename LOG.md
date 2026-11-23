@@ -564,3 +564,55 @@ Streaming-specific tests still report `2 passed`.
 - Integrate profiles with the existing `ModelRequest`/provider path without duplicating retry
   or error handling.
 - Run repeated experiments over a representative dataset and record `experiments/model-parameters.md`.
+
+
+## Day 75 — Model Selection
+
+Stage: Stage 5, Day 75
+
+### Component/Step
+Model Registry, Task-Based Selection, and Evaluation Matrix
+
+### Goal
+Select appropriate LLMs for different application tasks.
+
+### Problem/Friction
+One model may be too expensive, slow, or unsuitable for every task. Classification, complex
+reasoning, customer responses, RAG, and sensitive enterprise workloads have different quality,
+latency, capability, deployment, and compliance requirements.
+
+### Solution
+Define measurable requirements, compare candidates on a representative dataset, evaluate cost,
+latency, quality, capabilities, reliability, deployment, and compliance, then centralize verified
+model definitions in a registry with a deterministic task-based selection policy.
+
+### Trade-offs
+Multi-model flexibility can improve quality and cost but adds routing complexity, evaluation
+work, provider variance, fallback requirements, and operational overhead.
+
+### Concepts
+Model quality, TTFT, TTLT, inter-token and end-to-end latency, token-based cost estimation,
+context-window budgeting, model capabilities, provider reliability, cloud/self-hosted/hybrid
+deployment, security/compliance gates, model registry, task selector, routing, and continuous
+re-evaluation.
+
+### Architecture
+Application task → `ModelSelector` → `ModelRegistry` → verified `ModelDefinition` → provider
+model. Production routing can add capability validation, cost limits, availability checks,
+fallback, and observability.
+
+### Code State
+Documentation-only update. `ModelDefinition`, `ModelRegistry`, `ModelSelector`, `model_catalog.py`,
+registry/selection tests, and `experiments/model-selection.md` do not exist yet.
+
+The proposed `src/ai_agent/config/model_catalog.py` path is not currently importable because
+`src/ai_agent/config.py` is a module and `src/ai_agent/config/` has no `__init__.py`. Place the
+catalog elsewhere or convert `config` into a package before implementation.
+
+### Next Steps
+- Define a frozen `ModelDefinition` with verified capabilities and context-window limits.
+- Implement `ModelRegistry` duplicate, lookup, and listing behavior with tests.
+- Implement deterministic task-to-model selection with tests.
+- Register reviewed candidate models, replacing all placeholder IDs and unknown context values.
+- Build `experiments/model-selection.md` from repeated evaluations on the shared ticket dataset.
+- Document the final model choice, rejected alternatives, limitations, and fallback strategy.

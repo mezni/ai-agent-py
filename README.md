@@ -187,6 +187,44 @@ Parameter choices must be validated with repeated trials across a representative
 Record JSON validity, correctness, completion, response length, latency, and token usage before
 selecting a production profile.
 
+## Model Selection (Lesson Day 75)
+
+Model choice must be based on the application's requirements, not raw model size or benchmark
+rankings. Evaluate quality on a representative ticket dataset, then compare latency (TTFT, TTLT,
+inter-token, and end-to-end), cost, context-window fit, required capabilities, reliability,
+deployment constraints, and security/compliance requirements.
+
+| Dimension | Main question |
+| --- | --- |
+| Quality | Does the model meet task-specific accuracy, JSON, RAG, reasoning, and tool-call targets? |
+| Latency | Does it meet interactive and total-response targets under realistic load? |
+| Cost | What are input, output, cached-input, retry, and infrastructure costs at expected volume? |
+| Context | Can prompts, history, retrieved documents, current input, and reserved output fit? |
+| Capabilities | Are streaming, structured output, tools, vision, audio, reasoning, or embeddings required? |
+| Reliability | Are availability, errors, timeouts, rate limits, and version changes acceptable? |
+| Deployment | Is cloud, self-hosted, or hybrid operation required? |
+| Security/compliance | Are retention, residency, encryption, access, audit, and data terms acceptable? |
+
+The proposed project targets are at least 95% classification accuracy, at least 99% structured
+output validity, average latency under 2 seconds, required tool calling, an approved provider,
+and human approval before consequential actions. These are targets, not measured results.
+
+Cost can be estimated as `(input_tokens / 1,000,000) × input_price + (output_tokens /
+1,000,000) × output_price`. At 10,000 tickets per day with 1,000 input tokens and 300 output
+tokens per ticket, hypothetical $2/$8 per-million prices produce about `$44/day` or `$1,320` per
+30 days before retries, caching, and infrastructure.
+
+The target implementation uses a frozen `ModelDefinition`, a `ModelRegistry` with duplicate and
+unknown-model validation, and a task-based `ModelSelector`. Capability flags and context limits
+must be verified against provider documentation; placeholder model IDs and `context_window=0`
+are not production values. Because `src/ai_agent/config.py` is a module while
+`src/ai_agent/config/` lacks `__init__.py`, the model catalog needs an importable location or the
+`config` directory must become a package.
+
+Routing simple, medium, and complex work to different models can optimize cost and quality, but
+selection must come from measured performance with fallback and observability. None of the
+registry, selector, catalog, tests, or `experiments/model-selection.md` exists yet.
+
 ## Project Layout
 
 ```text

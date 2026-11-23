@@ -2728,19 +2728,21 @@ offline operation after model download, and hardware flexibility. It shifts resp
 team for compute, availability, scaling, model updates, monitoring, runtime security, and quality
 validation. Latency and quality depend heavily on hardware, model, and quantization.
 
-**Current implementation status:** documentation-only update. No Ollama dependency,
-`OllamaProvider`, provider factory, mocked provider tests, or local-inference experiment files
-exist yet. The current `ModelClient` is string-based, while the rest of the application still
-uses `ModelRequest`/`ModelResponse`; the full suite remains blocked by the separate
+**Current implementation status:** a local commit adds `OllamaProvider.generate()` and a yielding
+`OllamaProvider.stream()`, but the `ollama` package is missing from `pyproject.toml`, so importing
+the provider currently raises `ModuleNotFoundError`. There is no provider factory, provider
+configuration, mocked-provider test, or local-inference evaluation file yet. The current
+`ModelClient` is string-based, while the rest of the application still uses
+`ModelRequest`/`ModelResponse`; the full suite remains blocked by the separate
 `OpenAIProvider.stream()` `Iterator` import error.
 
 **Definition of done:**
 
-- [ ] Understand local inference and quantization
+- [x] Understand local inference and quantization
 - [ ] Install Ollama and run a small local model
 - [ ] Verify the local HTTP API
 - [ ] Add the Ollama Python dependency
-- [ ] Implement `OllamaProvider`
+- [x] Implement `OllamaProvider`
 - [ ] Reuse the shared model-client interface
 - [ ] Add provider configuration and factory
 - [ ] Add mocked provider tests
@@ -2769,5 +2771,165 @@ flowchart TD
     W[Quantized model weights] --> R
     R --> P[Model client interface]
     P --> A[AI application]
+```
+
+
+## Day 16 — LLM Application Architecture Patterns (Lesson Day 77)
+
+Level: Intermediate · 2 hours
+Stage: Stage 5 — LLM Engineering · Track A — AI Engineer
+Topic: **Structuring a production-ready LLM application**
+Project: **ai-agent-py**
+
+### Problem we are solving
+
+A monolithic `process_ticket()` function might load an API key, create a client, build a prompt,
+call an LLM, parse JSON, validate output, call tools, save results, handle errors, and return a
+response all in one place. That creates tight coupling, hard-to-test dependencies, poor
+maintainability, limited extensibility, and fragile error handling.
+
+The goal is a modular, provider-independent application that can be tested without a real LLM and
+extended with tools, validation, retries, fallback, observability, and human approval.
+
+### Steps
+
+1. **Apply layered architecture** — separate domain, application, interfaces, providers, tools,
+   validation, and infrastructure.
+2. **Use dependency inversion** — make high-level orchestration depend on a `ModelClient`
+   contract, not the OpenAI SDK or Ollama client.
+3. **Use ports and adapters** — isolate external systems behind interfaces and implement them
+   with provider adapters and infrastructure modules.
+4. **Keep orchestration explicit** — coordinate prompt construction, model invocation, parsing,
+   validation, tool dispatch, and results without implementing each dependency directly.
+5. **Apply strategy selection** — choose OpenAI, Ollama, or another provider through
+   configuration without rewriting workflow logic.
+6. **Use registries** — centralize model and tool definitions instead of scattering them through
+   application code.
+7. **Add guardrails** — validate inputs and outputs, enforce domain rules, and check safety
+   constraints before acting.
+8. **Add human-in-the-loop control** — require approval before consequential ticket actions.
+9. **Add observability** — track logs, latency, errors, and token usage at component boundaries.
+10. **Use configuration-driven design** — change provider, model, and generation parameters
+    without editing core code.
+11. **Inject dependencies** — supply the model client, prompt builder, parser, validator, and
+    tool dispatcher from a composition root rather than constructing them inside the orchestrator.
+12. **Test with fakes** — run orchestration tests with controlled model responses and no API key.
+13. **Review the current project** — identify existing components, duplicated responsibilities,
+    provider leakage into the domain, and missing boundaries before refactoring incrementally.
+
+### Notes
+
+**Patterns:**
+
+| Pattern | Purpose | Ticket-triage example |
+| --- | --- | --- |
+| Layered architecture | Separate responsibilities | API, application, domain, infrastructure |
+| Dependency inversion | Depend on interfaces | Orchestrator depends on `ModelClient` |
+| Ports and adapters | Isolate external systems | OpenAI, Ollama, PostgreSQL adapters |
+| Orchestration | Coordinate workflow | Classify → validate → route |
+| Strategy | Swap behavior | OpenAI vs Ollama |
+| Registry | Centralize configuration | Model catalog, tool registry |
+| Guardrail | Protect inputs and outputs | Schema validation, safety rules |
+| Human-in-the-loop | Control consequential actions | Approve ticket actions |
+| Observability | Track execution | Logs, latency, errors, tokens |
+| Configuration-driven design | Change behavior without code changes | Provider, model, generation parameters |
+
+**Target layers:**
+
+| Layer | Responsibility | Examples |
+| --- | --- | --- |
+| Domain | Business rules and core data | `Ticket`, category, priority |
+| Application | Use cases and workflow coordination | Orchestrator, classifier |
+| Interfaces | Contracts for dependencies | Model client, tool executor |
+| Providers | External LLM integrations | OpenAI, Ollama |
+| Tools | Business capabilities | Order lookup, customer lookup |
+| Validation | Validate inputs and outputs | Pydantic, schema validation |
+| Infrastructure | External resources | DB, logging, config |
+
+The domain must not depend on OpenAI, Ollama, FastAPI, databases, or other external
+infrastructure.
+
+**Dependency inversion:** avoid `Orchestrator → OpenAI SDK → OpenAI API`. Prefer
+`Orchestrator → ModelClient interface ← OpenAI/Ollama adapters`. The application owns the
+contract; providers implement it. This enables provider switching, local models in development,
+fallback providers, mocked unit tests, and provider-specific logic at the adapter boundary.
+
+**Orchestrator responsibilities:** obtain a prompt, call the model through its interface, parse
+the response, validate the result, dispatch authorized tools, and return an outcome. It should
+not initialize an SDK, read API keys, contain provider HTTP logic, access the database directly,
+or duplicate validation rules.
+
+**Dependency injection:** dependencies such as the model client, prompt builder, response parser,
+validator, and tool dispatcher are created at the composition root and passed into the
+orchestrator. Real implementations are used in production; fakes are used in tests.
+
+**Test architecture:** fake clients return controlled responses with no network call, cost,
+unexpected failure, or external dependency. They make edge cases fast and deterministic. A test
+may inject a fake model client, prompt builder, parser, and validator, then assert the final
+classification result. Adapt the pattern to the project's actual domain objects and interfaces.
+
+**Principles:** single responsibility, dependency inversion, separation of concerns, composition
+over inheritance, open/closed extension, fail safely, and explicit boundaries. Avoid a 1,000-line
+orchestrator, provider code in domain models, scattered prompts, tool execution mixed with
+parsing, business rules only in prompt text, tests requiring live API keys, and unauthorized
+consequential tool calls.
+
+**Current implementation status:** the project already separates many parts: domain models,
+application services, prompt builder/registry, response parser, retry/errors, OpenAI/Ollama
+provider files, tool registry/dispatcher/executor, and a string-based `ModelClient` protocol.
+However, `AgentOrchestrator` still constructs `OpenAI` directly, reads `OPENAI_MODEL` from the
+environment, embeds prompt instructions, and creates its own tool registry; it does not accept
+injected dependencies. The application also mixes string-based and `ModelRequest`/`ModelResponse`
+interfaces. There is no provider factory, no `tests/application/test_orchestrator.py`, and no
+end-to-end architecture refactor or review checklist completion recorded. The `ollama` dependency
+is missing and the full suite remains blocked by the separate `OpenAIProvider.stream()`
+`Iterator` import error.
+
+**Definition of done:**
+
+- [x] Understand layered architecture
+- [x] Understand dependency inversion
+- [x] Understand ports and adapters
+- [x] Understand dependency injection
+- [x] Explain the orchestrator's role
+- [ ] Switch providers without rewriting application logic
+- [ ] Test orchestration without calling an LLM
+- [ ] Review `ai-agent-py` architecture end to end
+- [ ] Run the test suite and Ruff successfully
+- [ ] Commit architecture changes
+- [ ] Update `LOG.md` with completed work
+
+### Diagrams
+
+```mermaid
+flowchart LR
+    I[Ticket input] --> A[Application layer]
+    A --> O[Orchestrator]
+    O --> PB[Prompt builder]
+    O --> MC[Model client interface]
+    MC --> OP[OpenAI provider]
+    MC --> LP[Ollama provider]
+    OP --> EM[External model]
+    LP --> LM[Local model]
+    O --> TD[Tool dispatcher]
+    TD --> BT[Business tools]
+    O --> V[Output validation]
+    V --> D[Domain result]
+    D --> H[Human approval]
+```
+
+```mermaid
+flowchart TD
+    CR[Composition root] -->|injects| O[Orchestrator]
+    CR -->|injects| M[Model client]
+    CR -->|injects| P[Prompt builder]
+    CR -->|injects| R[Response parser]
+    CR -->|injects| V[Validator]
+    CR -->|injects| T[Tool dispatcher]
+    M --> O
+    P --> O
+    R --> O
+    V --> O
+    T --> O
 ```
 

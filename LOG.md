@@ -650,8 +650,10 @@ cloud LLM or Ollama runtime → local model → response validation → human ap
 consequential actions.
 
 ### Code State
-Documentation-only update. No Ollama dependency, `OllamaProvider`, provider factory, mocked
-provider tests, or local-inference experiment files exist yet.
+A local commit adds `OllamaProvider.generate()` and a yielding `OllamaProvider.stream()`, but
+`ollama` is missing from `pyproject.toml`, so importing the provider raises `ModuleNotFoundError`.
+No provider factory, provider configuration, mocked-provider tests, or local-inference evaluation
+files exist yet.
 
 The current `ModelClient` is string-based, while the rest of the application still uses
 `ModelRequest`/`ModelResponse`. The full suite remains blocked by the separate
@@ -659,10 +661,70 @@ The current `ModelClient` is string-based, while the rest of the application sti
 
 ### Next Steps
 - Add the Ollama dependency and verify `ollama --version`, `ollama pull`, and `ollama list`.
-- Implement `OllamaProvider.generate()` and a yielding `stream()` behind the shared interface.
-- Reconcile `ModelClient` with the application's request/response contract.
+- Reconcile `OllamaProvider` with the application's request/response contract.
 - Add `LLM_PROVIDER`, `OLLAMA_MODEL`, and `OLLAMA_BASE_URL` configuration and a provider factory.
 - Add mocked provider tests, keeping `.env` and API keys out of Git.
 - Build `experiments/local-inference-dataset.json` and compare cloud/local quality, latency,
   token usage, resources, and capabilities.
 - Restrict the Ollama API to trusted access and document local runtime monitoring and updates.
+
+
+## Day 77 — LLM Application Architecture Patterns
+
+Stage: Stage 5 — LLM Engineering · Track A — AI Engineer
+
+### Component/Step
+LLM Application Architecture Patterns
+
+### Goal
+Design a modular, maintainable and testable LLM application using separation of concerns,
+dependency inversion, interfaces and dependency injection.
+
+### Problem/Friction
+LLM applications become difficult to maintain when provider integration, prompt construction,
+parsing, validation, tool execution and orchestration are tightly coupled.
+
+### Solution & Trade-offs
+Introduce architectural separation between domain, application, prompts, providers, tools and
+validation. The orchestrator coordinates dependencies through interfaces, enabling provider
+switching, isolated testing and easier extensibility. This adds files, abstractions, and initial
+design work in exchange for long-term maintainability, testability and flexibility.
+
+### Trade-offs
+- More files and abstractions.
+- More initial design work.
+- Better long-term maintainability, testability and flexibility.
+
+### Concepts
+Layered architecture, dependency inversion, ports and adapters, orchestration, strategy and
+registry patterns, guardrails, human-in-the-loop control, observability, configuration-driven
+design, dependency injection, fake dependencies, and production transition.
+
+### Architecture
+Ticket → prompt builder → model client interface → provider adapter → model → response parser →
+validator → domain result → human approval. A composition root injects the model client, prompt
+builder, parser, validator, and tool dispatcher into the orchestrator.
+
+### Active Work
+LLM engineering — modular architecture and orchestration.
+
+### Code State
+Architecture partially separated. The project has domain models, application services, prompt
+builder/registry, response parser, retry/errors, OpenAI/Ollama provider files, tool
+registry/dispatcher/executor, and a `ModelClient` protocol.
+
+`AgentOrchestrator` still constructs `OpenAI` directly, reads `OPENAI_MODEL` from the environment,
+embeds prompt instructions, and creates its own tool registry. Dependencies are not injected, no
+provider factory exists, string-based and `ModelRequest`/`ModelResponse` interfaces coexist, and
+`tests/application/test_orchestrator.py` does not exist. The `ollama` dependency is missing and
+the full suite remains blocked by the separate `OpenAIProvider.stream()` `Iterator` import error.
+
+### Next Steps
+- Complete the architecture review checklist and record duplicated responsibilities.
+- Refactor `AgentOrchestrator` to accept injected model, prompt, parsing, validation, and tool
+  dependencies.
+- Move provider construction and configuration into the composition root/factory.
+- Reconcile `ModelClient` with the application's request/response contract.
+- Add an orchestrator unit test using fakes and no API key.
+- Run the full test suite and Ruff after resolving existing blockers.
+- Implement robust error handling and retry strategies for LLM calls.

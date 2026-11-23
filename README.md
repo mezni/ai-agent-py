@@ -255,10 +255,43 @@ local inference should then be compared on the same ticket dataset using quality
 average/P95 latency, token usage, infrastructure cost, RAM/VRAM usage, and tool-calling support.
 Local inference is not automatically secure; restrict the runtime API to trusted access.
 
-No Ollama dependency, local provider, provider factory, mocked tests, or evaluation files exist
-yet. The current string-based `ModelClient` also conflicts with the application's
+An `OllamaProvider` with `generate()` and a yielding `stream()` exists, but the `ollama` package
+is missing from `pyproject.toml`, so the provider cannot be imported yet. There is no provider
+factory, provider configuration, mocked-provider test, or local-inference evaluation file yet.
+The current string-based `ModelClient` also conflicts with the application's
 `ModelRequest`/`ModelResponse` code, and the full suite remains blocked by the separate
 `OpenAIProvider.stream()` `Iterator` import error.
+
+## LLM Application Architecture Patterns (Lesson Day 77)
+
+The target design avoids a monolithic `process_ticket()` function by separating domain,
+application, prompt, provider, tool, validation, and infrastructure responsibilities. High-level
+workflow code should depend on a `ModelClient` interface instead of the OpenAI SDK or Ollama
+client; provider adapters implement that interface, so the orchestrator can switch providers,
+use local models in development, support fallback, and be tested with fakes.
+
+| Pattern | Purpose |
+| --- | --- |
+| Layered architecture | Separate domain, application, interfaces, providers, tools, validation, and infrastructure |
+| Dependency inversion | Make orchestration depend on abstractions, not provider implementations |
+| Ports and adapters | Isolate OpenAI, Ollama, databases, and other external systems |
+| Orchestration | Coordinate prompt → model → parse → validate → route → result |
+| Strategy and registry | Swap providers and centralize model/tool configuration |
+| Guardrails and human approval | Validate outputs and control consequential actions |
+| Observability and configuration | Track execution and change providers/models without code edits |
+
+Dependencies such as the model client, prompt builder, parser, validator, and tool dispatcher
+should be injected from a composition root. The orchestrator coordinates those components; it
+should not create SDK clients, read API keys, embed provider HTTP logic, access storage directly,
+or duplicate validation rules. The domain must not depend on OpenAI, Ollama, FastAPI, or database
+infrastructure.
+
+The project already has many separated components: domain models, application services, prompt
+builder/registry, response parser, retry/errors, provider files, tool registry/dispatcher/executor,
+and a `ModelClient` protocol. The refactor is incomplete: `AgentOrchestrator` still creates
+`OpenAI` directly, reads `OPENAI_MODEL`, embeds prompt instructions, and builds its own tool
+registry. There is no provider factory, no orchestrator unit test, and no full architecture
+review recorded. String-based and `ModelRequest`/`ModelResponse` interfaces coexist.
 
 ## Project Layout
 

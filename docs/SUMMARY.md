@@ -2558,20 +2558,23 @@ dataset with equivalent instructions and repeated trials, record quality/validit
 token usage/cost/capabilities, identify mandatory-requirement failures, and document the selected
 model, rejected alternatives, known limitations, and fallback strategy.
 
-**Current implementation status:** documentation-only update. None of `ModelDefinition`,
-`ModelRegistry`, `ModelSelector`, `model_catalog.py`, the registry/selection tests, or
-`experiments/model-selection.md` exists yet. Model selection is not wired into the application.
+**Current implementation status:** local commits add `ModelDefinition`, `ModelRegistry`,
+`ModelSelector`, a candidate catalog, and six registry/selection tests that report `6 passed`.
+The catalog still uses placeholder model IDs and `context_window=0`, and it cannot be imported
+because `src/ai_agent/config.py` resolves as a module while `src/ai_agent/config/` is not a
+package. Selection is not wired into the application, and `experiments/model-selection.md` does
+not exist yet.
 
 **Definition of done:**
 
-- [ ] Understand the eight model-selection criteria
-- [ ] Estimate cost from token volume and pricing
-- [ ] Define measurable acceptance criteria
-- [ ] Create `ModelDefinition`
-- [ ] Implement `ModelRegistry`
-- [ ] Implement `ModelSelector`
+- [x] Understand the eight model-selection criteria
+- [x] Estimate cost from token volume and pricing
+- [x] Define measurable acceptance criteria
+- [x] Create `ModelDefinition`
+- [x] Implement `ModelRegistry`
+- [x] Implement `ModelSelector`
 - [ ] Register verified candidate models
-- [ ] Add registry and selection tests
+- [x] Add registry and selection tests
 - [ ] Complete the model evaluation matrix
 - [ ] Document the final selection and fallback strategy
 
@@ -2602,5 +2605,169 @@ flowchart LR
     GM --> V
     AM --> V
     V --> O[Application]
+```
+
+
+## Day 15 — Local LLM Inference (Lesson Day 76)
+
+Level: Medium · 2 hours
+Stage: Stage 5, Day 76
+Topic: **Running local models through the provider abstraction**
+Project: **ai-agent-py**
+
+### Problem we are solving
+
+The current agent depends on a cloud provider: ticket → AI agent → OpenAI provider → cloud LLM.
+That introduces internet connectivity, provider availability, API costs, external data
+processing, rate limits, and provider-specific infrastructure dependencies.
+
+Local inference runs a trained model on infrastructure we control. The application still uses
+its normal flow, but the provider talks to Ollama and a local model instead of a cloud API:
+ticket → AI agent → local model provider → Ollama runtime → local LLM.
+
+### Steps
+
+1. **Understand local inference** — distinguish inference from training and identify the
+   hardware, runtime, and model weights involved.
+2. **Learn the ecosystem** — recognize Ollama, llama.cpp, Hugging Face, GGUF, quantization,
+   GPU inference, and CPU inference.
+3. **Understand quantization** — compare FP32, FP16, INT8, and 4-bit weight storage and account
+   for metadata, KV cache, and runtime overhead.
+4. **Install Ollama** — verify the CLI, pull a small instruct model such as `qwen3:4b`, list the
+   installed models, and run a local classification prompt.
+5. **Explore the HTTP API** — call `http://localhost:11434/api/chat` with `model`, `messages`,
+   and `stream` fields.
+6. **Add the Python client** — install `ollama` with `uv add ollama`.
+7. **Implement the provider** — add `OllamaProvider.generate()` for complete output and
+   `stream()` for yielded chunks while hiding Ollama from the application.
+8. **Reuse the model interface** — keep `ModelClient.generate()` and `stream()` as the common
+   contract instead of duplicating it.
+9. **Configure the provider** — add `LLM_PROVIDER`, `OLLAMA_MODEL`, and `OLLAMA_BASE_URL`
+   environment variables; keep `.env` out of Git.
+10. **Add a provider factory** — select Ollama or OpenAI from configuration, lazily import the
+    chosen provider, and raise on unsupported names.
+11. **Test without Ollama** — mock the client in provider unit tests and verify complete and
+    streamed responses.
+12. **Compare cloud and local inference** — run the same dataset and prompt through both,
+    measure quality, latency, resources, and capabilities, then document limitations.
+13. **Secure the runtime** — restrict the local API to trusted access and do not assume local
+    means automatically secure.
+
+### Notes
+
+**Inference versus training:**
+
+| Training | Inference |
+| --- | --- |
+| Learns model parameters | Uses existing parameters |
+| Requires training data | Receives input prompts |
+| Updates model weights | Normally does not update weights |
+| Computationally intensive | Generates predictions or responses |
+
+The lesson focuses exclusively on inference.
+
+**Ecosystem tools:**
+
+| Tool | Purpose |
+| --- | --- |
+| Ollama | Run and manage local models |
+| llama.cpp | Efficient GGUF inference |
+| Hugging Face | Discover, download, and use models |
+| GGUF | Common model file format in the llama.cpp ecosystem |
+| Quantization | Reduce weight precision and memory requirements |
+| GPU | Accelerate inference |
+| CPU | Run inference without a dedicated GPU |
+
+**Quantization:** lower precision reduces model size but may degrade quality. Theoretical
+weight-storage costs are about 4 bytes per FP32 parameter, 2 bytes per FP16 parameter, 1 byte
+per INT8 parameter, and 0.5 byte per 4-bit parameter. An 8B model therefore maps roughly to
+32 GB, 16 GB, 8 GB, and 4 GB. Actual inference also needs quantization metadata, KV cache,
+runtime overhead, and other allocations; a 4-bit 8B model does not necessarily fit in 4 GB of
+RAM or VRAM.
+
+**Ollama setup:**
+
+| Command | Purpose |
+| --- | --- |
+| `ollama --version` | Verify installation |
+| `ollama pull qwen3:4b` | Download a small model, if available and suitable |
+| `ollama list` | List installed models |
+| `ollama run qwen3:4b` | Run the model interactively |
+
+If `qwen3:4b` is unavailable or unsuitable, select another supported small instruct model.
+
+**Ollama API:** the default endpoint is `http://localhost:11434`. A chat request contains
+`model`, `messages`, and `stream`; `stream=false` returns a complete JSON response and
+`stream=true` produces chunks.
+
+**Provider design:** `OllamaProvider` builds `Client(host=host)`, calls `client.chat()` with a
+user message, returns `response.message.content or ""` from `generate()`, and yields each chunk's
+message content from `stream()`. The rest of the application remains provider-agnostic through
+`ModelClient`.
+
+**Configuration:** `LLM_PROVIDER=ollama`, `OLLAMA_MODEL=qwen3:4b`, and
+`OLLAMA_BASE_URL=http://localhost:11434` select and configure local inference. Ollama generation
+does not require an OpenAI API key. Do not commit `.env`.
+
+**Provider factory:** `create_model_provider()` returns `OllamaProvider` for `ollama` and the
+existing configured `OpenAIProvider` for `openai`; unknown values raise `ValueError`. Lazy
+imports avoid requiring both provider libraries at startup. Adapt the placeholder OpenAI
+constructor to the real application configuration.
+
+**Testing:** mock `provider.client.chat` so unit tests do not require a running Ollama service.
+One test verifies complete content; another verifies that `stream()` yields all expected chunks.
+
+**Evaluation dataset:** compare providers with shared ticket cases covering order status,
+refund requests, billing, and product issues. Use the same classification prompt and track
+classification accuracy, JSON validity, average latency, P95 latency, token usage,
+infrastructure cost, RAM/VRAM usage, and tool-calling capability. Local models are not assumed to
+match cloud quality.
+
+**Advantages and trade-offs:** local inference offers privacy control, no per-token API bill,
+offline operation after model download, and hardware flexibility. It shifts responsibility to the
+team for compute, availability, scaling, model updates, monitoring, runtime security, and quality
+validation. Latency and quality depend heavily on hardware, model, and quantization.
+
+**Current implementation status:** documentation-only update. No Ollama dependency,
+`OllamaProvider`, provider factory, mocked provider tests, or local-inference experiment files
+exist yet. The current `ModelClient` is string-based, while the rest of the application still
+uses `ModelRequest`/`ModelResponse`; the full suite remains blocked by the separate
+`OpenAIProvider.stream()` `Iterator` import error.
+
+**Definition of done:**
+
+- [ ] Understand local inference and quantization
+- [ ] Install Ollama and run a small local model
+- [ ] Verify the local HTTP API
+- [ ] Add the Ollama Python dependency
+- [ ] Implement `OllamaProvider`
+- [ ] Reuse the shared model-client interface
+- [ ] Add provider configuration and factory
+- [ ] Add mocked provider tests
+- [ ] Compare cloud and local inference
+- [ ] Document results and runtime security requirements
+
+### Diagrams
+
+```mermaid
+flowchart LR
+    T[Ticket] --> A[AI agent]
+    A --> M{Model configuration}
+    M -->|openai| OP[OpenAI provider]
+    M -->|ollama| LP[Local model provider]
+    OP --> C[Cloud LLM]
+    LP --> O[Ollama runtime]
+    O --> L[Local model]
+    C --> V[Response validation]
+    L --> V
+    V --> H[Human approval]
+```
+
+```mermaid
+flowchart TD
+    H[Hardware: CPU, GPU, RAM, VRAM] --> R[Ollama inference runtime]
+    W[Quantized model weights] --> R
+    R --> P[Model client interface]
+    P --> A[AI application]
 ```
 

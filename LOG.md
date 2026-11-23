@@ -602,17 +602,67 @@ model. Production routing can add capability validation, cost limits, availabili
 fallback, and observability.
 
 ### Code State
-Documentation-only update. `ModelDefinition`, `ModelRegistry`, `ModelSelector`, `model_catalog.py`,
-registry/selection tests, and `experiments/model-selection.md` do not exist yet.
+Local commits add `ModelDefinition`, `ModelRegistry`, `ModelSelector`,
+`src/ai_agent/config/model_catalog.py`, and registry/selection tests. The six targeted tests
+report `6 passed`. Selection is not wired into the application, and
+`experiments/model-selection.md` does not exist yet.
 
-The proposed `src/ai_agent/config/model_catalog.py` path is not currently importable because
-`src/ai_agent/config.py` is a module and `src/ai_agent/config/` has no `__init__.py`. Place the
-catalog elsewhere or convert `config` into a package before implementation.
+The catalog still uses placeholder model IDs and `context_window=0`. It is not importable because
+`src/ai_agent/config.py` is a module and `src/ai_agent/config/` has no `__init__.py`.
 
 ### Next Steps
-- Define a frozen `ModelDefinition` with verified capabilities and context-window limits.
-- Implement `ModelRegistry` duplicate, lookup, and listing behavior with tests.
-- Implement deterministic task-to-model selection with tests.
+- Move the catalog to an importable location or convert `config` into a package.
 - Register reviewed candidate models, replacing all placeholder IDs and unknown context values.
+- Wire verified capability and context-window checks into selection.
 - Build `experiments/model-selection.md` from repeated evaluations on the shared ticket dataset.
 - Document the final model choice, rejected alternatives, limitations, and fallback strategy.
+
+
+## Day 76 — Local LLM Inference
+
+Stage: Stage 5, Day 76
+
+### Component/Step
+Ollama Runtime, Local Provider, and Provider Factory
+
+### Goal
+Run and integrate local LLM inference.
+
+### Problem/Friction
+Dependence on cloud APIs, external processing and usage-based inference.
+
+### Solution
+Use Ollama to run a local model, add an `OllamaProvider` behind the shared `ModelClient`
+interface, select providers through configuration and a factory, and compare local and cloud
+inference on the same ticket dataset.
+
+### Trade-offs
+More control and potentially lower inference costs versus hardware, performance and maintenance requirements.
+
+### Concepts
+Local inference, hardware and runtimes, GGUF, quantization, KV-cache memory overhead, Ollama CLI
+and HTTP API, provider abstraction, configuration-based factories, mocked provider tests, cloud/
+local evaluation, runtime security, and local scaling/monitoring responsibilities.
+
+### Architecture
+Ticket → AI agent → `ModelClient` → provider factory → OpenAI provider or `OllamaProvider` →
+cloud LLM or Ollama runtime → local model → response validation → human approval for
+consequential actions.
+
+### Code State
+Documentation-only update. No Ollama dependency, `OllamaProvider`, provider factory, mocked
+provider tests, or local-inference experiment files exist yet.
+
+The current `ModelClient` is string-based, while the rest of the application still uses
+`ModelRequest`/`ModelResponse`. The full suite remains blocked by the separate
+`OpenAIProvider.stream()` `Iterator` import error.
+
+### Next Steps
+- Add the Ollama dependency and verify `ollama --version`, `ollama pull`, and `ollama list`.
+- Implement `OllamaProvider.generate()` and a yielding `stream()` behind the shared interface.
+- Reconcile `ModelClient` with the application's request/response contract.
+- Add `LLM_PROVIDER`, `OLLAMA_MODEL`, and `OLLAMA_BASE_URL` configuration and a provider factory.
+- Add mocked provider tests, keeping `.env` and API keys out of Git.
+- Build `experiments/local-inference-dataset.json` and compare cloud/local quality, latency,
+  token usage, resources, and capabilities.
+- Restrict the Ollama API to trusted access and document local runtime monitoring and updates.

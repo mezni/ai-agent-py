@@ -214,16 +214,51 @@ Cost can be estimated as `(input_tokens / 1,000,000) × input_price + (output_to
 tokens per ticket, hypothetical $2/$8 per-million prices produce about `$44/day` or `$1,320` per
 30 days before retries, caching, and infrastructure.
 
-The target implementation uses a frozen `ModelDefinition`, a `ModelRegistry` with duplicate and
-unknown-model validation, and a task-based `ModelSelector`. Capability flags and context limits
-must be verified against provider documentation; placeholder model IDs and `context_window=0`
-are not production values. Because `src/ai_agent/config.py` is a module while
-`src/ai_agent/config/` lacks `__init__.py`, the model catalog needs an importable location or the
-`config` directory must become a package.
+Local commits implement a frozen `ModelDefinition`, a `ModelRegistry` with duplicate and
+unknown-model validation, a task-based `ModelSelector`, a candidate catalog, and six registry/
+selector tests that pass. Capability flags and context limits must still be verified against
+provider documentation; the catalog's placeholder model IDs and `context_window=0` are not
+production values. `src/ai_agent/config/model_catalog.py` cannot currently be imported because
+`src/ai_agent/config.py` is a module while `src/ai_agent/config/` lacks `__init__.py`.
 
 Routing simple, medium, and complex work to different models can optimize cost and quality, but
-selection must come from measured performance with fallback and observability. None of the
-registry, selector, catalog, tests, or `experiments/model-selection.md` exists yet.
+selection must come from measured performance with fallback and observability. Selection is not
+wired into the application, and `experiments/model-selection.md` does not exist yet.
+
+## Local LLM Inference (Lesson Day 76)
+
+Ollama can run an instruct model locally and expose it through `http://localhost:11434/api/chat`.
+This keeps inference on controlled infrastructure and avoids cloud connectivity, API billing,
+external data processing, and provider rate limits. It adds responsibility for hardware, model
+downloads, runtime updates, scaling, monitoring, and runtime security.
+
+| Concept | Meaning |
+| --- | --- |
+| Inference | Uses existing model weights to generate responses |
+| Ollama | Local runtime, model manager, CLI, and HTTP API |
+| GGUF/llama.cpp | Common local model format and efficient inference runtime |
+| Quantization | Lower-precision weights that reduce memory but can reduce quality |
+| GPU/CPU | Hardware that accelerates inference or runs it without a dedicated GPU |
+
+A quantized 8B model has theoretical weight storage of roughly 32 GB (FP32), 16 GB (FP16),
+8 GB (INT8), or 4 GB (4-bit). Actual memory also includes metadata, KV cache, and runtime
+overhead, so a 4-bit model does not necessarily fit in 4 GB of RAM or VRAM.
+
+The target provider uses `Client(host=OLLAMA_BASE_URL)`, calls `client.chat()` with `stream=False`
+for complete responses, and yields chunk content when `stream=True`. `ModelClient` remains the
+shared interface, while `LLM_PROVIDER`, `OLLAMA_MODEL`, and `OLLAMA_BASE_URL` select and configure
+the provider through a factory. Ollama generation needs no OpenAI API key, and `.env` must stay
+out of Git.
+
+Unit tests should mock the Ollama client so Ollama does not need to run for the suite. Cloud and
+local inference should then be compared on the same ticket dataset using quality, JSON validity,
+average/P95 latency, token usage, infrastructure cost, RAM/VRAM usage, and tool-calling support.
+Local inference is not automatically secure; restrict the runtime API to trusted access.
+
+No Ollama dependency, local provider, provider factory, mocked tests, or evaluation files exist
+yet. The current string-based `ModelClient` also conflicts with the application's
+`ModelRequest`/`ModelResponse` code, and the full suite remains blocked by the separate
+`OpenAIProvider.stream()` `Iterator` import error.
 
 ## Project Layout
 

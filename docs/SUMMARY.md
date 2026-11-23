@@ -1504,7 +1504,8 @@ flowchart LR
         P0 --> P3[Tool C]
         P1 --> PC[Collect results]
         P2 --> PC
-    P3 --> PC
+        P3 --> PC
+    end
 ```
 
 ## Day 10 — Conversation State and Context Management (Day 75)

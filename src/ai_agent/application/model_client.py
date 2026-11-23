@@ -1,7 +1,10 @@
+from collections.abc import Iterator
 from typing import Protocol
-
-from ai_agent.domain.models import ModelRequest, ModelResponse
 
 
 class ModelClient(Protocol):
-    def generate(self, request: ModelRequest) -> ModelResponse: ...
+    def generate(self, prompt: str) -> str:
+        ...
+
+    def stream(self, prompt: str) -> Iterator[str]:
+        ...

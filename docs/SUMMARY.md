@@ -552,3 +552,190 @@ sequenceDiagram
     LLM-->>App: Final answer
     App-->>User: Order shipped, tracking number provided
 ```
+
+## Day 9 — Tool Execution and Orchestration (Day 74)
+
+Level: Intermediate · 2 hours
+Topic: **Tool Execution and Orchestration**
+
+### Problem we are solving
+
+The previous tool-calling loop worked for one tool, but real applications may expose many
+tools, receive several tool calls in one response, hit runaway loops, and encounter tool
+failures and complex control flow. That implementation had one tool, tool logic tightly
+coupled to the experiment, no orchestration abstraction, no execution limits, no consistent
+handling of tool failures, no reusable registry, and limited conversation context handling.
+
+The goal is to turn the basic executor into a reusable orchestration layer that manages the
+agent loop while tools remain independent, specific components.
+
+### Steps
+
+1. **Diagnose the single-tool loop** — list its limitations and identify the boundary
+   between orchestration (control flow) and individual tool behavior.
+2. **Define the new architecture** — put an agent orchestrator in charge of the loop, with a
+   model client for LLM communication, a registry of available tools, a dispatcher for
+   selection and validation, and structured tool results returned to the model.
+3. **Add multiple tools** — implement customer lookup over mock data and an FAQ search over
+   a small knowledge set, alongside the existing order lookup.
+4. **Define all tool contracts** — add a strict function schema for every tool so the model
+   knows each tool's name, purpose, arguments, types, required fields, and strictness.
+5. **Build the tool registry** — represent each tool as a frozen definition combining its
+   name, schema, argument model, and handler; support registration, lookup, listing names,
+   and returning schemas to send to the model; reject duplicate registrations.
+6. **Add argument models** — define strict Pydantic models that forbid extra fields for
+   every tool's arguments, so validation is centralized in the registry definitions.
+7. **Build a generic dispatcher** — look up the requested tool, parse JSON arguments,
+   validate them with the tool's model, call the handler with the validated values, and wrap
+   failures in a controlled tool execution error.
+8. **Introduce a tool result envelope** — return a consistent object containing tool name,
+   success flag, data, and error text so one failed tool does not crash the whole loop and
+   the model receives predictable output.
+9. **Add execution limits** — cap orchestration turns and total tool calls; recognize that
+   one response can request multiple tools, so the two limits are different; preserve the
+   previous response's output items when sending tool outputs back to the model.
+10. **Run the demo experiment** — ask a question requiring both order status and shipping
+    policy; the model may request one or both tools, and the orchestrator dispatches,
+    validates, executes, returns results, and produces the final answer.
+11. **Test orchestration pieces without an LLM** — verify registry contents, tool retrieval,
+    unknown-tool errors, and dispatcher behavior for order, FAQ, and customer tools; run the
+    tools tests and the linter.
+12. **Review trade-offs and document** — compare direct calls, registries, generic
+    dispatchers, sequential and parallel execution, and fixed versus unlimited limits;
+    record the work and commit.
+
+### Notes
+
+**Learning objectives:** understand orchestration and the agent loop; implement multiple
+tools, a central registry, and a generic dispatcher; handle multiple tool calls and tool
+failures; add execution limits; preserve context during tool execution; build a reusable
+orchestrator; and test orchestration without an LLM.
+
+**Component responsibilities:**
+
+| Component | Responsibility |
+| --- | --- |
+| Agent orchestrator | Controls the overall agent loop |
+| Model client | Communicates with the LLM |
+| Tool registry | Stores available tools |
+| Dispatcher | Selects and invokes the requested tool |
+| Argument validator | Validates tool arguments |
+| Tool executor | Executes the approved tool |
+| Tool result | Returns execution output |
+
+The orchestrator manages workflow; tools perform specific tasks.
+
+**Three tools:** order status lookup, customer lookup, and FAQ search. Customer access uses
+mock data in the learning project, but in production it must be authenticated, authorized,
+and privacy-controlled. FAQ search scores keyword overlap between the query and FAQ
+question/answer text; it is not semantic search and is intended to be replaced by retrieval
+from a knowledge store later.
+
+**Registry versus dispatcher:** the registry is a passive catalog of tool definitions and
+the schemas to expose to the model; the dispatcher is the active component that resolves a
+requested name, parses and validates arguments, executes the handler, and normalizes the
+outcome. Keeping them separate means adding a tool does not require changing orchestration
+code.
+
+**Dispatcher mechanics:** registry lookup finds the tool definition, JSON parsing converts
+the model's argument text, model validation enforces the contract, validated data is
+converted into a Python dictionary for the handler, and a controlled error type signals
+failure. Errors returned to the model are intentionally generic; production systems should
+log internal details securely with a correlation ID and avoid leaking sensitive information
+to the model or user. Tool outputs must be treated as untrusted data.
+
+**Tool result envelope:** a frozen result object carries the tool name, a success flag, data
+on success, and an error message on failure, serialized as JSON. This is more consistent than
+mixing arbitrary tool payloads and error strings, and it lets the orchestrator continue the
+loop after an individual tool failure.
+
+**Execution limits:** maximum orchestration turns prevent infinite loops; maximum tool calls
+cap tool execution. Other useful limits discussed are timeouts, token budgets, cost budgets,
+and tool permissions. The learning defaults are five turns and ten tool calls. Turn limits
+and tool-call limits are not the same because a single model response can request several
+tools.
+
+**Context preservation:** when sending tool outputs back for continuation, the previous
+response's output items are preserved in the input. This is required for the tool-call
+continuation pattern used here; the SDK supports other continuation patterns as well.
+
+**Multi-tool scenario:** for "Where is my order #4821, and how long does shipping take?",
+the orchestrator sends the message with all tool schemas; the model may request the order tool
+and the FAQ tool; the orchestrator resolves definitions, executes both, returns their outputs
+plus the previous output to the model, and relays the final combined answer. The LLM chooses
+which tools to request; the orchestrator controls execution.
+
+**Trade-offs:**
+
+| Design | Advantage | Trade-off |
+| --- | --- | --- |
+| Direct function calls | Simple | Difficult to scale |
+| Tool registry | Centralized tools | More abstraction |
+| Generic dispatcher | Reusable execution | More complexity |
+| Sequential tools | Simple and predictable | Higher latency |
+| Parallel tools | Lower latency for independent calls | Concurrency and failure complexity |
+| Fixed execution limit | Protects resources | May stop complex workflows |
+| Unlimited orchestration | Flexible | Risk of loops and excessive cost |
+
+Sequential execution is appropriate when tools depend on earlier results; parallel execution
+helps when tools are independent, but it adds concurrency and failure handling complexity.
+Concurrent tool execution is deferred until asynchronous programming and production
+workflows are covered.
+
+**Next direction:** Day 10 adds conversation history, message management, context windows,
+token limits, persistence, and a basic memory strategy so the agent can handle multi-turn
+conversations.
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    U[User input] --> O[Agent orchestrator]
+    O --> M[Model client] --> L[LLM]
+    L --> Q{Tool calls?}
+    Q -- No --> F[Final answer]
+    Q -- Yes --> R[Tool registry]
+    R --> D[Tool dispatcher]
+    D --> V[Argument validation]
+    V --> E[Tool execution]
+    E --> T[Tool result]
+    T --> O
+```
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Orchestrator
+    participant LLM
+    participant Registry
+    participant OrderTool
+    participant FaqTool
+
+    User->>Orchestrator: Order status and shipping question
+    Orchestrator->>LLM: Message + all tool schemas
+    LLM-->>Orchestrator: Requests order and FAQ tools
+    Orchestrator->>Registry: Resolve tool definitions
+    Registry-->>Orchestrator: Approved definitions
+    Orchestrator->>OrderTool: Execute order lookup
+    OrderTool-->>Orchestrator: Shipped
+    Orchestrator->>FaqTool: Execute FAQ search
+    FaqTool-->>Orchestrator: 3 to 5 business days
+    Orchestrator->>LLM: Tool outputs + previous output
+    LLM-->>Orchestrator: Final response
+    Orchestrator-->>User: Combined answer
+```
+
+```mermaid
+flowchart LR
+    subgraph Sequential
+        A1[Tool A] --> A2[Tool B] --> A3[Tool C]
+    end
+    subgraph Parallel
+        P0[Orchestrator] --> P1[Tool A]
+        P0 --> P2[Tool B]
+        P0 --> P3[Tool C]
+        P1 --> PC[Collect results]
+        P2 --> PC
+        P3 --> PC
+    end
+```

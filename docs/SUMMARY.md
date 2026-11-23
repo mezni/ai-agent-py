@@ -1511,131 +1511,191 @@ flowchart LR
 
 Level: Intermediate · 2 hours
 Topic: **Conversation State and Context Management**
-Note: the lesson uses a standalone `llm-context-lab` project, but the concepts apply directly
-to the main agent application.
+Project: **ai-agent-py**
 
 ### Problem we are solving
 
-LLM API calls are stateless: the model only sees the input supplied with the current
-request. Without application-managed context, a second question like "What is my
-profession?" after "My name is Alex. I work as a software engineer." produces "I don't
-know your profession."
+We will implement conversation history, message management, context windows, token limits,
+conversation persistence, and a basic memory strategy so our agent can handle multi-turn
+conversations.
 
-With conversation state, the application stores earlier messages and sends the relevant
-history together with the new question, so the model can answer using prior turns. The
-application — not the LLM — is responsible for maintaining and supplying context, and it
-must do so without blindly sending an ever-growing history.
+LLM APIs are stateless: each request contains only the messages supplied with that call. In
+a support conversation, "My order #4821 has not arrived" followed by "When will it arrive?"
+is ambiguous unless the application supplies the earlier order reference with the second
+question.
+
+The application must own conversation state: store ordered user and assistant messages,
+select the relevant history, respect the model's token budget, persist conversations across
+restarts, and maintain a small structured memory of durable facts. Conversation state is
+supporting context, not authoritative business state: order status, permissions, and
+workflow state still come from tools, databases, and application services.
 
 ### Steps
 
-1. **Recognize stateless behavior** — compare a request that only sends the latest message
-   with one that includes previous user and assistant turns plus the system instructions.
-2. **Learn the vocabulary** — stateless request, conversation state, message history,
-   context window, context management, persistent memory, and session.
-3. **Represent conversation history** — use an ordered list of messages with roles such as
-   system, user, and assistant.
-4. **Separate conversation state from application state** — keep narrative context separate
-   from authoritative business data such as ticket IDs, statuses, permissions, and workflow
-   stage.
-5. **Design the context architecture** — conversation service, conversation store, context
-   manager, message builder, LLM API, and persistence layer.
-6. **Understand context budgets** — account for system instructions, history, retrieved
-   documents, current input, and output reserve within the model's token limit.
-7. **Compare context strategies** — full history, sliding window, summarization, selective
-   retrieval, structured memory, and hybrid approaches.
-8. **Build the lab project** — initialize the environment, configure credentials safely, and
-   ignore local environment files.
-9. **Implement the conversation manager** — add validated user and assistant messages, cap
-   the number of history messages, prepend the system prompt when building context, and
-   support clearing the conversation.
-10. **Integrate the LLM** — add the user message, build the request context, call the model,
-    append the assistant reply, and return it.
-11. **Run the conversation loop** — verify that a later question can use an earlier fact
-    from the conversation.
-12. **Test the context manager** — cover message storage, system prompt inclusion, and
-    history limiting; run tests and lint.
-13. **Extend the approach** — add token counting, a token budget, context truncation,
-    summarization of older messages, stored summaries, and a combined summary-plus-recent
-    context.
-14. **Review production concerns** — persistence, user scoping, concurrency, relevance
-    filtering, sensitive data handling, context poisoning, deduplication, failures, and cost
-    tracking; then commit the work.
+1. **Define conversation models** — add `MessageRole`, `Message`, `Conversation`, and
+   `ConversationMemory` in `src/ai_agent/domain/conversation.py`; validate non-empty content
+   and attach stable IDs and UTC timestamps.
+2. **Implement conversation persistence** — build `ConversationStore` over SQLite with
+   `conversations`, `messages`, and `conversation_memory` tables, cascading deletes, an
+   index on `messages(conversation_id)`, and JSON-encoded facts.
+3. **Expose store operations** — create conversations, add role-tagged messages, retrieve
+   full or limited history, upsert memory, and return empty memory when none is stored.
+4. **Build token-aware context assembly** — estimate tokens with `ceil(len(text) / 4)`,
+   reserve output tokens, always include the system prompt and current message, and add the
+   newest history messages that fit the remaining budget.
+5. **Handle context pressure explicitly** — reject contexts where fixed content already
+   exceeds the budget with `ContextWindowExceeded` rather than silently dropping required
+   instructions or the current message.
+6. **Create the conversation manager facade** — start conversations, add user and assistant
+   messages, read history, update structured memory, and produce a provider-ready context
+   for a conversation ID.
+7. **Test persistence and isolation** — use temporary SQLite databases to verify that
+   messages and memory survive store recreation, facts round-trip correctly, and conversation
+   IDs keep state separate.
+8. **Test context selection** — verify that recent history is included, current input is
+   last, oversized fixed input is rejected, and older messages are removed before newer ones.
+9. **Prepare orchestrator integration** — inspect the existing tool-calling orchestrator
+   before modifying it, then load context, persist the user turn, run the existing agent
+   loop, persist the assistant turn, and update memory.
+10. **Run a five-turn support lab** — track order `#4821`, delivery expectation, and email
+    preference across follow-up questions; confirm later answers use earlier facts without
+    inventing business data.
+11. **Review production requirements** — user scoping, concurrency, redaction, context
+    poisoning, retention, token-cost tracking, and selective retrieval before deployment.
+12. **Verify, document, and commit** — run the full test suite, check changed files with
+    Ruff, record the implementation state, and commit in logical steps.
 
 ### Notes
 
-**Learning objectives:** explain stateless models; manage conversation state and message
-history; distinguish conversation from application state; respect context windows and token
-limits; apply truncation strategies; build a memory layer; persist conversations; and design
-context management for production.
+**Learning objectives:** explain why stateless APIs require application-managed conversation
+state; store and retrieve ordered message history by conversation ID; apply token-aware
+context-window management; persist conversations and memory in SQLite; maintain a structured
+summary and facts; connect state to the tool-enabled orchestrator; test storage, context
+assembly, and multi-turn behavior; and identify production concerns for state management.
 
 **Core concepts:**
 
 | Concept | Meaning |
 | --- | --- |
-| Stateless request | Each model call is independent |
-| Conversation state | Information about the current conversation |
-| Message history | Previous user and assistant messages |
-| Context window | Maximum input/output token capacity of a model |
-| Context management | Selecting, organizing, and limiting information sent to the model |
-| Persistent memory | Information surviving application restarts |
-| Session | A logical interaction between user and application |
-
-**Conversation history:** a conversation is a sequence of role-tagged messages, typically
-starting with system instructions and alternating user and assistant turns. The application
-passes the selected messages to the model with each request.
+| Stateless request | Each model call contains only the input supplied with that call |
+| Conversation history | Ordered, role-tagged user and assistant messages |
+| Conversation state | Narrative context for one logical interaction |
+| Application state | Authoritative business data owned by code, tools, or databases |
+| Context window | Maximum input and output token capacity of the selected model |
+| Token counting | Estimating the cost of prompts, messages, memory, and responses |
+| Context management | Selecting and limiting what is sent to the model |
+| Persistent memory | Summary and facts saved across process restarts |
+| Session | A scoped conversation, normally identified by a conversation ID |
 
 **Conversation state versus application state:**
 
 | Conversation state | Application state |
 | --- | --- |
-| User messages | Current ticket ID |
-| Assistant responses | Ticket status |
-| Previous questions | API execution results |
-| Conversation summary | Authentication context |
-| Conversation preferences | Workflow stage |
+| User messages | Order status returned by a tool |
+| Assistant responses | Ticket ID and workflow stage |
+| Previous questions | Authentication and permissions |
+| Conversation summary | Customer data from a database |
+| Communication preference | Payment and fulfillment records |
 
-Conversation history must not be the authoritative source for business-critical state.
-Ticket, payment, order, and permission data belong in the application or database.
+The model may be told that order `#4821` was discussed, but the actual status must come from
+an order tool or database. History and memory are context, not a source of truth.
 
 **Architecture responsibilities:**
 
 | Component | Responsibility |
 | --- | --- |
-| Conversation service | Handle incoming requests |
-| Conversation store | Store messages by conversation ID |
-| Context manager | Decide which messages are included |
-| Message builder | Construct the LLM request |
-| LLM API | Generate the response |
-| Persistence layer | Save user and assistant messages |
+| `ConversationManager` | Facade for conversation lifecycle and context requests |
+| `ConversationStore` | SQLite persistence for conversations, messages, and memory |
+| `ContextManager` | Token estimation, budget enforcement, and history selection |
+| Domain models | Contracts for messages, conversations, roles, and memory |
+| Existing orchestrator | Tool loop that receives prepared context and returns a reply |
+| Tests | Offline verification with temporary databases and deterministic inputs |
 
-**Context window:** measured in tokens, it can include system and developer instructions,
-conversation history, user input, retrieved documents, tool outputs, and output capacity,
-depending on the model. A 16,000-token illustrative budget might allocate tokens to system
-instructions, history, retrieved context, the current input, and an output reserve. Real
-limits depend on the model and API. Messages cannot be appended indefinitely.
+**Project structure changes:**
+
+| File | Purpose |
+| --- | --- |
+| `src/ai_agent/domain/conversation.py` | `MessageRole`, `Message`, `Conversation`, `ConversationMemory` |
+| `src/ai_agent/application/conversation_store.py` | SQLite tables, CRUD operations, memory upsert |
+| `src/ai_agent/application/context_manager.py` | Token estimation, budget checks, context assembly |
+| `src/ai_agent/application/conversation_manager.py` | Conversation API used by callers |
+| `tests/application/test_conversation_store.py` | Persistence and restart tests |
+| `tests/application/test_context_manager.py` | Context selection and token-budget tests |
+| `tests/application/test_conversation_manager.py` | End-to-end facade test without an LLM |
+
+**Domain models:** `MessageRole` supports `system`, `user`, and `assistant`. `Message` stores
+its role, content, UUID, and UTC creation time and rejects empty content. `Conversation`
+holds an ID, messages, and creation time. `ConversationMemory` stores a short summary and a
+list of durable facts. The models are deliberately small so they can be persisted, tested,
+and passed between application layers without provider-specific dependencies.
+
+**SQLite schema:**
+
+| Table | Key columns |
+| --- | --- |
+| `conversations` | `id` primary key, `created_at` |
+| `messages` | `id` primary key, `conversation_id` foreign key, `role`, `content`, `created_at` |
+| `conversation_memory` | `conversation_id` primary and foreign key, `summary`, `facts` as JSON |
+
+Foreign keys use `ON DELETE CASCADE`, and `idx_messages_conversation` indexes history lookups.
+`get_messages(limit)` returns the newest messages in chronological order.
+
+**Context assembly:** the default budget uses `max_context_tokens=32000` and
+`response_reserve_tokens=4000`, leaving 28,000 tokens for input context. Tokens are estimated
+as `ceil(len(text) / 4)`, with four tokens of per-message overhead. The system prompt is
+always first; stored memory is injected as a system message when present; history is scanned
+newest-first and reversed into chronological order; the current user message is always last.
+If fixed content plus the current message exceeds the budget, `ContextWindowExceeded` is
+raised. Dropping older history is allowed; dropping instructions or the active question is
+not.
 
 **Context strategies:**
 
 | Strategy | How it works | Use case |
 | --- | --- | --- |
 | Full history | Send all previous messages | Short conversations |
-| Sliding window | Keep only the latest messages | Long conversations |
+| Sliding window | Keep only the newest messages | Long conversations |
 | Summarization | Compress older messages | Long-running conversations |
 | Selective retrieval | Retrieve relevant past information | Knowledge-intensive assistants |
 | Structured memory | Store key facts separately | Personalization or task context |
 | Hybrid | Combine window, summary, and retrieval | Production systems |
 
-**Conversation manager mechanics:** the system prompt enforces consistent behavior; the
-message list preserves ordered interactions; message validation rejects invalid roles and
-empty content; a maximum history size avoids unbounded growth; context construction prepends
-the system message to the selected recent history; clearing starts a fresh conversation.
-A message-count limit is not a token limit — a small number of very long messages can still
-overflow the context window, so token budgeting and truncation are needed.
+**Memory strategy:** `ConversationMemory` stores a concise summary plus explicit facts, such
+as `Order ID: 4821` and `Communication preference: Email`. The context manager renders these
+as a system-level "Relevant conversation memory" block. Current code exposes
+`update_memory()` for explicit writes; automatic post-eviction summarization is a later
+extension. Memory must never override tool results, permissions, or database records.
 
-**Extension architecture:** when the context budget is exceeded, older messages are
-summarized, the summary is stored, and the final context combines the summary with the most
-recent messages. This preserves essential facts such as the user's name even after the
-original messages leave the active window.
+**Testing notes:** tests use `tmp_path` SQLite databases, so no credentials, network calls,
+or live LLM are required. Current coverage verifies persistence after store recreation,
+memory round-trips, recent-history inclusion, current message placement, rejection of
+oversized input, oldest-first removal, and manager-level context assembly. `uv run pytest -q`
+reports `45 passed`; changed files pass Ruff, while unrelated pre-existing Ruff findings
+remain elsewhere in the repository.
+
+**Current implementation status:**
+
+| Definition of done item | Status |
+| --- | --- |
+| Domain models with validation | Done |
+| SQLite persistence for conversations, messages, and memory | Done |
+| Store and retrieve messages by conversation ID | Done |
+| Token estimation and response reserve | Done |
+| Context from system prompt, memory, recent history, and current message | Done |
+| `ConversationManager` facade | Done |
+| Unit tests for store, context, and manager | Done |
+| Full test suite passing | Done |
+| Orchestrator integration | Pending |
+| Five-turn support lab | Pending |
+| Documentation | Updated here |
+| Commit | Not made in this session |
+
+**Five-turn lab:** exercise a support dialogue beginning with "My order #4821 has not
+arrived", followed by delivery expectation, email preference, a request to recall the order
+number, and a final "When will it arrive?" question. Expected memory is the summary
+"Customer is investigating an undelivered order" with facts `Order ID: 4821`, `Issue: Order
+not delivered`, and `Communication preference: Email`. Later answers should use the stored
+facts while tool-derived status remains authoritative.
 
 **Production considerations:**
 
@@ -1653,9 +1713,16 @@ original messages leave the active window.
 | API failures | Retry policy, timeout, error handling |
 | Context cost | Token usage tracking and budgets |
 
-A relational store such as PostgreSQL is suitable for persistence: a conversations table
-holds identifiers, timestamps, summary, and metadata, while a messages table stores each
-message's conversation ID, role, content, token count, timestamp, and metadata.
+**Assessment points:** know why a stateless API needs application-managed state; distinguish
+conversation state from business state; explain why token budgets are safer than message
+counts; describe what memory stores and why it is not authoritative; explain how conversation
+IDs isolate state; identify which tests require no LLM; and name the remaining production
+concerns.
+
+**Next direction:** Day 11 (Lesson 76) examines tool design patterns, including reliable tool
+schemas, validation, error handling, and response shaping; Day 12 (Lesson 77) moves toward
+production orchestration with logging, tracing, retries, cost controls, and deployment
+concerns.
 
 ### Diagrams
 

@@ -1,51 +1,42 @@
 from ai_agent.application.conversation_store import ConversationStore
-from ai_agent.domain.conversation import (
-    Conversation,
-    ConversationMemory,
-    Message,
-    MessageRole,
-)
+from ai_agent.domain.memory import MemoryFact
 
 
-def test_conversation_messages_persist(tmp_path):
-    db = tmp_path / "test.db"
+def test_long_term_memory_persistence(tmp_path):
+    db = tmp_path / "memory.db"
 
     store = ConversationStore(str(db))
 
-    conversation = Conversation()
-    store.create_conversation(conversation)
-
-    message = Message(
-        role=MessageRole.USER,
-        content="My order #4821 has not arrived.",
+    store.save_fact(
+        "customer-123",
+        MemoryFact(
+            key="communication_preference",
+            value="email",
+        ),
     )
 
-    store.add_message(conversation.id, message)
-
-    # Create a new store to simulate application restart.
     new_store = ConversationStore(str(db))
 
-    history = new_store.get_messages(conversation.id)
+    facts = new_store.get_facts("customer-123")
 
-    assert len(history) == 1
-    assert history[0].content == message.content
-    assert history[0].role == MessageRole.USER
+    assert len(facts) == 1
+    assert facts[0].value == "email"
 
 
-def test_memory_persists(tmp_path):
-    store = ConversationStore(str(tmp_path / "test.db"))
+def test_memory_update_does_not_create_duplicate(tmp_path):
+    store = ConversationStore(str(tmp_path / "memory.db"))
 
-    conversation = Conversation()
-    store.create_conversation(conversation)
-
-    memory = ConversationMemory(
-        summary="Customer has an undelivered order.",
-        facts=["Order ID: 4821"],
+    store.save_fact(
+        "customer-123",
+        MemoryFact("communication_preference", "email"),
     )
 
-    store.save_memory(conversation.id, memory)
+    store.save_fact(
+        "customer-123",
+        MemoryFact("communication_preference", "phone"),
+    )
 
-    result = store.get_memory(conversation.id)
+    facts = store.get_facts("customer-123")
 
-    assert result.summary == memory.summary
-    assert result.facts == memory.facts
+    assert len(facts) == 1
+    assert facts[0].value == "phone"

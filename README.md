@@ -154,6 +154,39 @@ currently breaks full-suite collection. The new string-based `ModelClient` contr
 conflicts with the existing `ModelRequest`/`ModelResponse` interface used by the rest of the
 application.
 
+## Model Parameters (Lesson Day 74)
+
+Lesson Day 74 defines how generation settings should be selected and centralized. Ticket
+classification needs low variation, a controlled output budget, valid JSON, and confirmed
+completion. Conversational or creative tasks can use higher temperature and a larger token
+budget, but the same configuration must not be applied to every task.
+
+| Parameter | Purpose |
+| --- | --- |
+| `temperature` | Controls randomness in token selection |
+| `top_p` | Limits sampling to the nucleus of likely tokens |
+| `max_output_tokens` | Caps generated output length and cost |
+| `frequency_penalty` | Reduces repeated tokens |
+| `presence_penalty` | Encourages new topics or vocabulary |
+| `stop` | Stops generation at a configured sequence |
+
+Temperature and top-p support varies by model; usually tune one at a time. Explicit zero
+values must be preserved, while unsupported `None` values must be omitted rather than sent to
+the provider. A small token budget can truncate JSON, so response status and completion must be
+checked before parsing.
+
+The target design separates task selection from provider parameters: task profiles select a
+frozen `GenerationConfig`, a builder omits `None` values, and the provider translates the
+result into API options. Local commits add `GenerationConfig`, `build_generation_options()`,
+four task profiles, and builder tests. The profiles currently live in
+`src/ai_agent/config/generation_profiles.py`, but they cannot be imported because
+`src/ai_agent/config.py` resolves as a module instead of a package. Provider integration is
+not implemented; `ModelRequest` still exposes only `max_output_tokens`.
+
+Parameter choices must be validated with repeated trials across a representative dataset.
+Record JSON validity, correctness, completion, response length, latency, and token usage before
+selecting a production profile.
+
 ## Project Layout
 
 ```text

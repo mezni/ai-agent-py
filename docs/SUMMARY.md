@@ -2248,3 +2248,170 @@ flowchart TD
     B -- Unexpected end --> G[Treat as incomplete]
 ```
 
+## Day 13 — Model Parameters (Lesson Day 74)
+
+Level: Medium · 2 hours
+Stage: Stage 5, Day 74
+Topic: **Configuring LLM generation behavior**
+Project: **ai-agent-py**
+
+### Problem we are solving
+
+A ticket-triage agent is expected to return predictable, structured output such as:
+
+```json
+{
+  "category": "order_status",
+  "order_id": "4821",
+  "needs_order_lookup": true
+}
+```
+
+The same prompt can produce different results when generation parameters change. High
+temperature can add unnecessary variation, a small output-token budget can truncate JSON,
+poor sampling choices can reduce predictability, and repetition penalties can distort wording.
+
+The goal is to choose parameters according to the task instead of accepting arbitrary
+defaults. Configuration should be centralized, task-specific, and explicit about which values
+a model supports.
+
+### Steps
+
+1. **Identify the task's quality requirements** — classify support tickets with low
+   variation, compact output, valid JSON, and reliable completion.
+2. **Learn temperature** — understand its effect on token randomness and why lower values
+   suit classification and extraction.
+3. **Learn top-p** — understand nucleus sampling and why temperature or top-p is usually
+   tuned, not both at once.
+4. **Set an output budget** — choose `max_output_tokens` high enough for valid JSON while
+   avoiding excessive length and cost.
+5. **Evaluate repetition penalties** — use frequency and presence penalties deliberately,
+   mainly for open-ended generation rather than strict classification.
+6. **Consider stop sequences** — recognize their limited usefulness for structured output and
+   the risk of stopping inside legitimate content.
+7. **Define task profiles** — create reusable configurations for classification, extraction,
+   customer responses, and RAG answers.
+8. **Build provider options** — omit unsupported `None` values while preserving explicit zero
+   values such as `temperature=0.0`.
+9. **Integrate with the provider** — pass generated options through the existing model-client
+   and provider architecture without removing retry, error-handling, or streaming behavior.
+10. **Test configuration behavior** — verify `None` removal, zero-value preservation, and
+    custom values without model calls.
+11. **Run the parameter experiment** — compare temperature and token-budget profiles on the
+    same ticket, record validity, correctness, completion, latency, and token usage, then
+    document the production choice.
+
+### Notes
+
+**Core parameters:**
+
+| Parameter | Purpose | Main trade-off |
+| --- | --- | --- |
+| `temperature` | Controls randomness in token selection | Lower is more predictable; higher is more varied |
+| `top_p` | Limits sampling to the nucleus of likely tokens | Tune instead of temperature in most experiments |
+| `max_output_tokens` | Caps generated output length | Too low truncates; too high costs more |
+| `frequency_penalty` | Reduces repeated tokens | High values can sound unnatural or distort JSON |
+| `presence_penalty` | Encourages new topics or vocabulary | More useful for open-ended text than classification |
+| `stop` | Stops on a configured sequence | Can terminate legitimate structured content |
+
+**Temperature guidance:**
+
+| Temperature | Typical behavior | Suitable tasks |
+| --- | --- | --- |
+| `0.0` | Most deterministic sampling behavior | Classification |
+| `0.2` | Low variation | Extraction, structured output |
+| `0.5` | Moderate variation | General assistance |
+| `0.7` | More variation | Conversational responses |
+| `1.0` | Higher variation | Creative generation |
+
+Support and accepted ranges depend on the model and API. Temperature `0` does not guarantee
+identical output across model versions or infrastructure.
+
+**Top-p guidance:** `top_p=0.1` considers a narrow set of likely tokens, `top_p=0.5` a broader
+set, and `top_p=1.0` the full distribution. Change one variable at a time so experiment
+results are attributable.
+
+**Parameter selection by task:**
+
+| Task | Temperature | Output budget | Priority |
+| --- | --- | --- | --- |
+| Ticket classification | Low | Small | Consistency |
+| Entity extraction | Low | Small | Accuracy |
+| JSON generation | Low | Controlled | Valid structure |
+| RAG answer generation | Low–moderate | Medium | Grounding |
+| Customer support conversation | Moderate | Medium | Naturalness |
+| Creative generation | Higher | Larger | Diversity |
+
+These are starting points, not universal optima. Validate each profile against the selected
+model and an evaluation dataset.
+
+**Configuration design:** a frozen `GenerationConfig` stores optional model parameters.
+`None` means "do not send this parameter," allowing one application profile to avoid settings
+unsupported by a particular model. A builder converts the dataclass into provider options and
+filters `None` values while preserving explicit zero values.
+
+The committed task profiles currently live in
+`src/ai_agent/config/generation_profiles.py`, but importing them fails because
+`src/ai_agent/config.py` resolves as a module and `src/ai_agent/config/` is not a package. Move
+the profiles to `src/ai_agent/generation_profiles.py` or convert `config` into a package before
+using them from the application.
+
+**Provider integration:** the application selects a task profile; the provider translates it
+into API parameters. Keep retry, error handling, response completion checks, and streaming
+behavior intact. Check response completion and status before parsing JSON.
+
+**Practical lab:** run one experiment with `temperature=0.0, max_output_tokens=300`, one with
+`0.3/300`, one with `0.7/300`, and one with `0.0/50`. Record JSON validity, classification
+correctness, parsing success, response length, completion status, latency, and token usage.
+One execution per configuration is insufficient; repeat trials across a representative ticket
+dataset and compare aggregate results.
+
+**Current implementation status:** local commits add `GenerationConfig`,
+`build_generation_options()`, four task profiles, and three offline tests that report
+`3 passed`. The builder drops `None` values while preserving explicit `0.0` values. The profile
+module is not importable because `src/ai_agent/config.py` resolves as a module while
+`src/ai_agent/config/` is not a package. `ModelRequest` still exposes only
+`max_output_tokens`, and `OpenAIProvider.generate()` already sends that value. No parameter
+experiment results exist yet. The full suite remains blocked by the separate streaming-provider
+`Iterator` import error.
+
+**Definition of done:**
+
+- [x] Understand temperature and top-p
+- [x] Understand max output tokens
+- [x] Understand frequency and presence penalties
+- [x] Create `GenerationConfig`
+- [x] Implement the generation option builder
+- [x] Create task-specific profiles
+- [ ] Integrate configuration with the provider
+- [x] Write and pass unit tests
+- [ ] Run parameter experiments
+- [ ] Document findings in `LOG.md`
+
+### Diagrams
+
+```mermaid
+flowchart LR
+    R[Application request] --> T{Task type}
+    T --> C[Ticket classification profile]
+    T --> E[Entity extraction profile]
+    T --> S[Customer response profile]
+    T --> G[RAG response profile]
+    C --> F[Generation config]
+    E --> F
+    S --> F
+    G --> F
+    F --> P[Provider adapter]
+    P --> L[LLM]
+    L --> V[Output validation]
+```
+
+```mermaid
+flowchart TD
+    C[GenerationConfig] --> B[Build options]
+    B --> N{Discard None values?}
+    N -- Yes --> D[Keep explicit zero and configured values]
+    D --> A[Add options to provider request]
+    A --> R[Validate status and completion]
+```
+

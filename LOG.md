@@ -507,3 +507,60 @@ Repository-wide Ruff reports the streaming errors plus pre-existing findings.
 - Reconcile `ModelClient` with the application's `ModelRequest`/`ModelResponse` contract.
 - Wire streaming into the CLI or a transport that can flush chunks to users.
 - Add TTFT, duration, and completion-status observability without logging sensitive content.
+
+
+## Day 74 — Model Parameters
+
+Stage: Stage 5, Day 74
+
+### Component/Step
+Generation Configuration and Task-Specific Parameter Profiles
+
+### Goal
+Control LLM generation behavior through explicit, task-specific parameters.
+
+### Problem/Friction
+Different tasks need different generation behavior. High temperature can make ticket
+classification inconsistent, an insufficient token limit can truncate JSON, and unsupported
+settings can cause provider errors or misleading experiments.
+
+### Solution
+Centralize generation settings in a frozen `GenerationConfig`, define task-specific profiles,
+build provider options by omitting `None` values while preserving explicit zero values, and
+integrate those options without replacing retry, error-handling, response-validation, or
+streaming paths.
+
+### Trade-offs
+Centralized profiles add flexibility and reviewability but require tuning, model-compatibility
+checks, repeated experiments, and ongoing maintenance. One universal configuration is simpler
+but cannot balance consistency, creativity, output length, and cost across tasks.
+
+### Concepts
+Temperature, top-p, maximum output tokens, frequency penalty, presence penalty, stop
+sequences, nucleus sampling, output truncation, completion status, and aggregate evaluation.
+
+### Architecture
+Application request → task type → generation profile → `GenerationConfig` → provider options →
+LLM → output validation. The application chooses the task profile; the provider translates it
+into model-specific parameters.
+
+### Code State
+Local commits add a frozen `GenerationConfig`, `build_generation_options()`, classification,
+extraction, customer-response, and RAG profiles, plus three offline builder tests. Those tests
+report `3 passed`. The builder drops `None` values while preserving explicit `0.0` values.
+
+The profile module is currently at `src/ai_agent/config/generation_profiles.py`, but importing
+it fails because `src/ai_agent/config.py` resolves as a module and `src/ai_agent/config/` is not
+a package. The profiles are therefore not usable from the application yet. `ModelRequest`
+still exposes only `max_output_tokens`, and `OpenAIProvider.generate()` already sends that
+value.
+
+The full suite remains blocked by the separate streaming-provider `Iterator` import error.
+Streaming-specific tests still report `2 passed`.
+
+### Next Steps
+- Move the profiles to `src/ai_agent/generation_profiles.py` or convert `config` into a package.
+- Check each selected parameter against the target model/API before provider integration.
+- Integrate profiles with the existing `ModelRequest`/provider path without duplicating retry
+  or error handling.
+- Run repeated experiments over a representative dataset and record `experiments/model-parameters.md`.

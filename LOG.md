@@ -325,3 +325,61 @@ execution limits, and error handling.
 
 ### Next Steps
 Conversation state, memory, and context management.
+
+
+## Day 75 — Conversation State and Context Management
+
+### Component/Step
+Conversation State, Persistence, and Token-Aware Context Assembly
+
+### Goal
+Enable the agent to handle multi-turn conversations by storing message history,
+persisting conversations, and building prompts that respect token limits.
+
+### Problem/Friction
+LLM APIs are stateless, so a follow-up such as "When will it arrive?" loses the
+meaning of earlier messages unless the application supplies prior context.
+Unbounded history is also unsafe because it can exceed the model context window.
+
+### Solution & Trade-offs
+- Added conversation domain models with stable IDs, UTC timestamps, and content
+  validation.
+- Added SQLite persistence for conversations, messages, and structured memory.
+- Used JSON for memory facts and cascade deletes for related rows.
+- Added token estimation and a response reserve instead of a simple message cap.
+- Built context from the system prompt, optional memory, recent history, and the
+  current user message.
+- Preserved newest history first and raised a clear error when fixed content
+  cannot fit the budget.
+- Kept memory as supporting context rather than authoritative business state.
+- Added offline tests with temporary SQLite databases and deterministic inputs.
+- Fixed packaging and test configuration so `uv run pytest -q` works directly.
+- Chose a lightweight character-based token estimate; a model-specific tokenizer
+  can replace it later.
+- Automatic summarization of evicted history remains future work.
+
+### Active Work
+LLM Engineering — Conversation State and Context Management.
+
+### Code State
+Implemented:
+- `src/ai_agent/domain/conversation.py`
+- `src/ai_agent/application/conversation_store.py`
+- `src/ai_agent/application/context_manager.py`
+- `src/ai_agent/application/conversation_manager.py`
+- `tests/application/test_conversation_store.py`
+- `tests/application/test_context_manager.py`
+- `tests/application/test_conversation_manager.py`
+
+Also updated `pyproject.toml` for the `ai_agent` module, CLI entry point, and
+pytest path/import settings. Documentation is recorded in `docs/SUMMARY.md`,
+`README.md`, and this log.
+
+Verification: `uv run pytest -q` reports `45 passed`. Conversation implementation
+files pass Ruff; repository-wide linting retains pre-existing unrelated findings.
+
+### Next Steps
+- Integrate `ConversationManager` with `AgentOrchestrator` and the CLI.
+- Run the five-turn order `#4821` support lab.
+- Add automatic summarization when older messages leave the context window.
+- Add conversation/user scoping and production persistence policies.

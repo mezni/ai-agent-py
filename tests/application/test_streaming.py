@@ -13,13 +13,9 @@ class FakeModelClient:
 
 
 def test_assistant_streams_chunks():
-    assistant = Assistant(
-        model_client=FakeModelClient()
-    )
+    assistant = Assistant(model_client=FakeModelClient())
 
-    chunks = list(
-        assistant.ask_stream("Check order #4821")
-    )
+    chunks = list(assistant.ask_stream("Check order #4821"))
 
     assert chunks == [
         "Your ",
@@ -30,12 +26,8 @@ def test_assistant_streams_chunks():
 
 
 def test_streamed_chunks_can_be_reconstructed():
-    assistant = Assistant(
-        model_client=FakeModelClient()
-    )
+    assistant = Assistant(model_client=FakeModelClient())
 
-    result = "".join(
-        assistant.ask_stream("Check order #4821")
-    )
+    result = "".join(assistant.ask_stream("Check order #4821"))
 
     assert result == "Your order is being processed."

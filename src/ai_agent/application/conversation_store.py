@@ -190,7 +190,6 @@ class ConversationStore:
             facts=json.loads(row["facts"]),
         )
 
-
     def save_fact(self, owner_id: str, fact: MemoryFact):
         with self._connect() as conn:
             conn.execute(

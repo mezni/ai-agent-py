@@ -10,8 +10,4 @@ def build_generation_options(
 ) -> dict:
     options = asdict(config)
 
-    return {
-        key: value
-        for key, value in options.items()
-        if value is not None
-    }
+    return {key: value for key, value in options.items() if value is not None}

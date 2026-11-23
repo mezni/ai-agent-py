@@ -1,4 +1,3 @@
-
 import re
 
 from ai_agent.application.memory_extractor import MemoryExtractor
@@ -7,7 +6,6 @@ from ai_agent.domain.memory import MemoryFact
 
 
 class TicketMemoryExtractor(MemoryExtractor):
-
     def extract(
         self,
         messages: list[Message],
@@ -16,7 +14,6 @@ class TicketMemoryExtractor(MemoryExtractor):
         facts = {}
 
         for message in messages:
-
             if message.role != MessageRole.USER:
                 continue
 
@@ -39,8 +36,4 @@ class TicketMemoryExtractor(MemoryExtractor):
             if "not arrived" in text or "not delivered" in text:
                 facts["issue"] = "order_not_delivered"
 
-        return [
-            MemoryFact(key=key, value=value)
-            for key, value in facts.items()
-        ]
-
+        return [MemoryFact(key=key, value=value) for key, value in facts.items()]

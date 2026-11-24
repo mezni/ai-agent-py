@@ -3286,3 +3286,774 @@ sequenceDiagram
     LLM-->>App: Response
 ```
 
+## Day 19 — LLM Retry Strategies (Lesson Day 80)
+
+Day: Day 80 of 85
+Duration: 2 hours
+Difficulty: Medium
+Stage: Stage 5 — LLM Engineering | Track A — AI Engineer
+Topic: **LLM Retry Strategies**
+Project: **ticket-triage** (`ai-agent-py`)
+
+### 1. Learning objectives
+
+By the end of today, you should be able to:
+
+1. Explain why LLM requests fail.
+2. Differentiate retry, fallback, and circuit breaker strategies.
+3. Implement exponential backoff.
+4. Implement randomized jitter.
+5. Handle HTTP 429 and 5xx errors.
+6. Respect provider retry instructions such as `Retry-After`.
+7. Define retry eligibility.
+8. Prevent retry storms and cascading failures.
+9. Implement a reusable retry mechanism in Python.
+
+### 2. Problem we are solving
+
+The ticket-triage application sends a request to OpenAI:
+
+```json
+{
+  "ticket_id": "TICKET-1001",
+  "message": "My order has not arrived."
+}
+```
+
+The request can fail for several reasons:
+
+| Failure | Example |
+| --- | --- |
+| Network interruption | Connection reset |
+| Timeout | Provider takes too long |
+| Rate limiting | HTTP 429 |
+| Server error | HTTP 500 |
+| Temporary overload | HTTP 503 |
+| Gateway timeout | HTTP 504 |
+
+Immediately returning an error is a common mistake: many of these failures are temporary and
+can succeed on a later attempt. The goal is to retry transient failures automatically without
+overwhelming the provider or delaying the application excessively.
+
+### 3. Retry vs fallback vs circuit breaker
+
+These mechanisms solve different problems and can be combined.
+
+| Strategy | Purpose | Example |
+| --- | --- | --- |
+| Retry | Repeat the same provider request | OpenAI → OpenAI |
+| Fallback | Switch providers | OpenAI → Ollama |
+| Circuit breaker | Stop calling an unhealthy provider | Temporarily bypass OpenAI |
+
+A typical request path is: the application sends an LLM request to a retry manager, the retry
+manager calls the primary provider, eligible transient failures are retried with backoff,
+exhausted retries go to a fallback manager, and only a controlled error is returned after all
+bounded options fail.
+
+### 4. Core concepts
+
+**Retry eligibility.** Not every failure should be retried.
+
+| Error | Retry? | Reason |
+| --- | --- | --- |
+| Connection error | Yes | May be temporary |
+| Timeout | Yes | May be temporary |
+| HTTP 429 | Yes, conditionally | Rate limit |
+| HTTP 500 | Yes | Server failure |
+| HTTP 502 | Yes | Gateway failure |
+| HTTP 503 | Yes | Service unavailable |
+| HTTP 504 | Yes | Gateway timeout |
+| HTTP 400 | No | Invalid request |
+| HTTP 401 | No | Authentication failure |
+| HTTP 403 | No | Permission failure |
+| Invalid API key | No | Configuration issue |
+| Content policy refusal | No | Not a transient error |
+
+HTTP 429 needs special care: it can mean temporary rate limiting or exhausted quota. Inspect
+the provider's error details before deciding to retry.
+
+**Fixed retry.** The simplest strategy waits the same amount between attempts: failure → wait
+2 seconds → retry → wait 2 seconds → retry. If thousands of clients retry on the same schedule,
+they can overwhelm the provider again.
+
+**Exponential backoff.** Increase the delay progressively:
+
+`d_n = min(d_max, d_0 × 2^n)`
+
+where `d_0` is the initial delay, `n` is the retry number starting at zero, and `d_max` caps the
+delay.
+
+| Attempt | Delay |
+| --- | --- |
+| Initial request | 0 seconds |
+| Retry 1 | 1 second |
+| Retry 2 | 2 seconds |
+| Retry 3 | 4 seconds |
+| Retry 4 | 8 seconds |
+
+**Jitter.** Exponential backoff alone can still synchronize clients. Full jitter randomizes the
+wait:
+
+`d_n = U(0, min(d_max, d_0 × 2^n))`
+
+| Retry | Maximum delay | Example randomized delay |
+| --- | --- | --- |
+| 1 | 1 second | 0.7 seconds |
+| 2 | 2 seconds | 1.3 seconds |
+| 3 | 4 seconds | 2.1 seconds |
+| 4 | 8 seconds | 5.6 seconds |
+
+Different application instances then retry at different times, reducing retry storms.
+
+**Retry-After.** A provider can return a header such as `Retry-After: 5` with HTTP 429. The
+retry manager should respect it, subject to its configured maximum wait and the overall request
+deadline. An unbounded provider-supplied interval must never block a worker indefinitely.
+
+**Maximum attempts.** Never retry indefinitely. `max_attempts=3` means one initial attempt plus
+two retries. After that, hand off to a fallback or return a controlled failure.
+
+### 5. Hands-on lab — implement a retry manager
+
+**Project structure** (extend the existing project):
+
+```text
+ticket-triage/
+├── app/
+│   └── llm/
+│       ├── __init__.py
+│       ├── base.py
+│       ├── openai_provider.py
+│       ├── ollama_provider.py
+│       ├── fallback_manager.py
+│       ├── retry_manager.py
+│       └── exceptions.py
+├── tests/
+│   ├── test_retry_manager.py
+│   └── test_fallback_manager.py
+└── pyproject.toml
+```
+
+**Retry configuration** — keep retry behavior configurable rather than hardcoded:
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class RetryConfig:
+    max_attempts: int = 3
+    initial_delay: float = 1.0
+    max_delay: float = 8.0
+    multiplier: float = 2.0
+```
+
+**Retry manager** — a reusable `execute(operation)` loop should:
+
+- catch only explicitly retryable provider/application errors;
+- stop immediately on permanent failures such as authentication or invalid requests;
+- compute exponential backoff with full jitter and cap it at `max_delay`;
+- prefer a bounded `Retry-After` value when the provider supplies one;
+- enforce `max_attempts` as total attempts, not retries after the first call;
+- re-raise the final exception when all attempts are exhausted;
+- inject `sleep` so tests never wait in real time.
+
+**Fallback integration** — wrap the primary provider call in the retry manager, then call a
+secondary provider only when retryable failures are exhausted. The lesson's broad
+`except Exception` is a teaching placeholder, not production code: catch only explicitly
+eligible provider failures and propagate authentication, authorization, invalid-request,
+programming, and unexpected errors. Give the secondary provider its own bounded retry policy.
+
+**Test a successful retry:**
+
+```python
+def test_retry_succeeds_after_temporary_failure():
+    attempts = 0
+
+    def operation():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise LLMUnavailableError()
+        return "order_status"
+
+    manager = RetryManager(
+        RetryConfig(max_attempts=3, initial_delay=0, max_delay=0)
+    )
+    assert manager.execute(operation) == "order_status"
+    assert attempts == 3
+```
+
+**Test exhausted retries:**
+
+```python
+def test_retry_fails_after_max_attempts():
+    attempts = 0
+
+    def operation():
+        nonlocal attempts
+        attempts += 1
+        raise LLMUnavailableError()
+
+    manager = RetryManager(
+        RetryConfig(max_attempts=3, initial_delay=0, max_delay=0)
+    )
+    with pytest.raises(LLMUnavailableError):
+        manager.execute(operation)
+    assert attempts == 3
+```
+
+**Run the checks:**
+
+```text
+uv run pytest tests/test_retry_manager.py -v
+uv run ruff check .
+```
+
+Expected: both retry tests pass and lint reports no issues.
+
+### 6. Production considerations
+
+| Capability | Why it matters |
+| --- | --- |
+| `Retry-After` | Respect provider instructions |
+| Exponential backoff | Reduce pressure during outages |
+| Jitter | Avoid synchronized retries |
+| Total deadline | Bound end-to-end latency |
+| Retry budget | Prevent excessive retry traffic |
+| Idempotency | Avoid duplicate side effects |
+| Cancellation | Stop unnecessary work |
+| Structured logging | Diagnose retry behavior |
+| Metrics | Measure retry rates and failures |
+
+**Duplicate requests are a critical LLM concern.** The provider may successfully process a
+request while the application times out before receiving the response. A retry can then process
+it again, increasing token consumption and cost. Use provider-supported idempotency mechanisms
+where available; do not assume generation requests are idempotent for billing; and never retry
+non-idempotent tool executions without application-level deduplication.
+
+### 7. Retry policy design exercise
+
+Consider this configuration:
+
+```yaml
+llm:
+  primary:
+    provider: openai
+    timeout_seconds: 8
+  retry:
+    max_attempts: 3
+    initial_delay_seconds: 1
+    max_delay_seconds: 4
+    strategy: exponential_backoff
+    jitter: full
+  fallback:
+    enabled: true
+    provider: ollama
+    timeout_seconds: 5
+  request:
+    total_deadline_seconds: 15
+```
+
+1. **Two HTTP 503 failures, then success:** attempt 1 fails, wait `U(0, 1)`, attempt 2 fails,
+   wait `U(0, 2)`, attempt 3 succeeds. This fits only if provider latency plus both waits stay
+   under 15 seconds.
+2. **HTTP 401:** authentication failures are permanent. No retry and no provider-intent
+   fallback; propagate the error.
+3. **HTTP 429 with `Retry-After: 3`:** wait three seconds instead of the computed jitter delay,
+   then retry, provided three seconds is within the configured maximum wait and the remaining
+   deadline. Otherwise stop rather than sleeping beyond the budget.
+4. **All retry attempts exhausted:** after three total primary attempts, pass the failure to the
+   fallback manager and invoke Ollama under its own bounded policy, still within the 15-second
+   deadline.
+5. **Ollama also unavailable:** exhaust the secondary's bounded retries and return a controlled
+   error. Do not loop between providers indefinitely.
+
+The deadline is a hard constraint, not documentation. Before each sleep and each new attempt,
+the implementation must check the remaining budget; three 8-second primary attempts plus a
+5-second fallback already exceed 15 seconds before any backoff is added.
+
+### 8. Knowledge assessment
+
+1. What is exponential backoff?
+2. Why do we need jitter?
+3. What is the difference between maximum attempts and maximum retries?
+4. Should HTTP 401 be retried?
+5. What is the purpose of `Retry-After`?
+6. What is a retry storm?
+7. How do retries affect LLM costs?
+8. How would you combine retry and fallback?
+9. What is a total request deadline?
+10. Why should retries be limited for tool executions?
+
+Key answers: exponential backoff grows delays geometrically up to a cap; jitter desynchronizes
+clients; three attempts means one call plus two retries; 401 is permanent and must not be
+retried; `Retry-After` is provider wait guidance bounded by policy; a retry storm is a traffic
+spike caused by synchronized retries; each retried generation can consume more tokens and cost;
+retry the primary first, then fall back only after eligible retries are exhausted; a total
+deadline bounds the whole workflow including all attempts and waits; and tool executions may
+have side effects that duplicate requests cannot safely repeat.
+
+### 9. Git commit
+
+After completing the lab:
+
+```text
+git add .
+git commit -m "feat(llm): implement exponential backoff and retry policies"
+```
+
+### Current implementation status
+
+The current code has moved beyond the Day 78 snapshot. `src/ai_agent/application/retry.py`
+defines `calculate_backoff()` and `execute_with_retry()` with capped exponential delays, full
+jitter via `random.uniform()`, an injectable `sleep`, `max_attempts` counted as total attempts,
+and a `retry_after` value used when an `LLMRateLimitError` provides one.
+`src/ai_agent/application/errors.py` defines `LLMTransientError` (`LLMRateLimitError`,
+`LLMTimeoutError`, `LLMConnectionError`), `LLMPermanentError` (`LLMAuthenticationError`,
+`LLMInvalidRequestError`), and `LLMResponseError`.
+
+Remaining gaps: no overall deadline or retry budget, no cap on `Retry-After`, no retry
+metrics or structured logging, no fallback manager, no streaming retry rules, and no
+idempotency guard. `src/ai_agent/application/ticket_classifier.py` disables SDK retries and
+wraps its model call in `execute_with_retry()`, but `src/ai_agent/providers/openai_provider.py`
+uses SDK retries and converts errors to plain `RuntimeError`, so the shared classifier does not
+apply there; `src/ai_agent/providers/ollama_provider.py` has no retry or error normalization.
+`tests/application/test_retry.py` covers success, retry-then-success, exhaustion, and injected
+sleep, but not jitter bounds, delay values, `Retry-After`, or deadline behavior.
+
+### Definition of done
+
+- [x] Explain transient versus permanent failures.
+- [x] Implement exponential backoff with a maximum delay.
+- [x] Implement full jitter and injectable sleep.
+- [x] Define retry eligibility and maximum attempts.
+- [ ] Honor a bounded `Retry-After`.
+- [ ] Enforce an overall request deadline and retry budget.
+- [ ] Add a reusable fallback manager with its own retry policy.
+- [ ] Apply retry handling consistently across providers.
+- [ ] Add retry logging and metrics.
+- [ ] Verify no duplicate consequential actions.
+- [ ] Cover jitter, `Retry-After`, and deadline behavior in tests.
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    A[LLM request] --> RM[Retry manager]
+    RM --> P{Provider call}
+    P -- Success --> S[Return response]
+    P -- Transient failure --> E{Eligible and attempts left?}
+    E -- Yes --> W[Backoff with jitter or Retry-After]
+    W --> P
+    E -- No --> F[Fallback manager]
+    F --> O[Ollama provider]
+    O -- Success --> S
+    O -- Failure --> X[Controlled error]
+    P -- Permanent failure --> X
+```
+
+```mermaid
+flowchart LR
+    A[Attempt 1 fails] --> B["Wait U(0, 1)"]
+    B --> C[Attempt 2 fails]
+    C --> D["Wait U(0, 2)"]
+    D --> E[Attempt 3]
+```
+
+```mermaid
+flowchart TD
+    D[Request starts] --> T{Deadline remaining?}
+    T -- No --> X[Stop with controlled error]
+    T -- Yes --> A[Attempt provider call]
+    A --> Q{Retryable failure?}
+    Q -- No --> X
+    Q -- Yes --> B{Another attempt fits deadline?}
+    B -- Yes --> W[Bounded wait then retry]
+    W --> T
+    B -- No --> X
+```
+
+
+## Day 18 — LLM Fallback Strategies (Lesson Day 79)
+
+Day: Day 79 of 85
+Duration: 2 hours
+Difficulty: Intermediate
+Stage: Stage 5 — LLM Engineering | Track A — AI Engineer
+Topic: **Multi-provider LLM fallback routing**
+Project: **ai-agent-py**
+Project objective: make `ai-agent-py` resilient when the primary provider is unavailable, slow,
+rate limited, or returning server errors by routing eligible requests to a secondary provider.
+
+### 1. Learning objectives
+Today, you will learn to:
+- Design a resilient LLM integration that can automatically switch between providers.
+- Implement primary and secondary model routing.
+- Handle provider outages, timeouts, and rate limits with fallback routing.
+- Define fallback eligibility so permanent errors are not blindly sent elsewhere.
+- Avoid cascading failures and uncontrolled latency.
+- Build a plain-Python provider abstraction for multi-provider routing.
+- Design a production multi-provider architecture with observability and health controls.
+- Test fallback behavior without calling real LLM APIs.
+
+### 2. Problem — one provider is one failure domain
+Imagine the ticket-triage application receives:
+
+> My order #4821 has not arrived.
+
+The application calls OpenAI, but the provider is temporarily unavailable. Without fallback, the
+ticket cannot be classified even though a local Ollama model or another cloud provider might be
+healthy.
+
+| Failure | Example | Desired behavior |
+| --- | --- | --- |
+| Provider outage | Connection error or service unavailable | Switch to a secondary provider |
+| Timeout | Model does not respond within the deadline | Retry or fall back within the total deadline |
+| Rate limit | HTTP 429 | Back off, then fall back if still limited |
+| Server error | HTTP 500, 502, 503, 504 | Retry or fall back |
+| Authentication error | HTTP 401 | Fail immediately; fallback will not fix credentials |
+| Bad request | HTTP 400 | Fail immediately; fix the request |
+| Invalid model output | Malformed JSON | Use a conditional recovery strategy |
+
+Fallback should be treated as an application-level reliability strategy, not as a way to hide
+invalid credentials, unsafe requests, or content-policy refusals.
+
+### 3. Fallback eligibility
+A fallback manager should use application-level error types, not provider SDK exceptions.
+
+| Error | Fallback? | Reason |
+| --- | --- | --- |
+| Connection error | Yes | The current provider cannot be reached |
+| Timeout | Yes | The current provider exceeded its deadline |
+| HTTP 429 rate limit | Conditional | Short, transient rate limits may justify fallback; exhausted quota requires alerting |
+| HTTP 500 | Yes | Provider-side server failure |
+| HTTP 502 / 503 / 504 | Yes | Gateway or availability failure |
+| HTTP 401 | No | Authentication must be fixed |
+| HTTP 403 | No | Authorization must be fixed |
+| HTTP 400 | No | The request is invalid |
+| Invalid JSON output | Conditional | Try validation or repair first, then fall back if malformed output repeats |
+| Content policy refusal | No | Do not bypass a safety refusal with another provider |
+
+The target eligibility tuple from the lesson is:
+
+`FALLBACK_ELIGIBLE_ERRORS = (LLMTimeoutError, LLMUnavailableError, LLMRateLimitError)`
+
+### 4. Retry versus fallback
+A retry sends the same request to the same provider again. A fallback sends the request to a
+different provider. The two strategies solve different problems and should be controlled separately.
+
+| Strategy | Flow | Best for |
+| --- | --- | --- |
+| Retry | Provider A → failure → wait → Provider A again | Brief transient failures |
+| Fallback | Provider A → eligible failure → Provider B | Provider outages and sustained provider issues |
+| Retry then fallback | Provider A → retry → eligible failure → Provider B | Production-grade resilience within one deadline |
+
+Always disable or control the provider SDK's own retries when the application owns the retry and
+fallback policy. Otherwise retries can multiply silently.
+
+### 5. Circuit breaker awareness
+A circuit breaker protects the application from repeatedly calling an unhealthy provider.
+
+| State | Meaning | Behavior |
+| --- | --- | --- |
+| `CLOSED` | Provider is considered healthy | Calls are allowed |
+| `OPEN` | Provider recently failed too often | Calls are skipped and routed elsewhere |
+| `HALF_OPEN` | Recovery is being tested | A small number of probe calls are allowed |
+
+The Day 79 focus is the fallback manager itself. Circuit breakers are explored in a later lesson.
+
+### 6. Provider abstraction and fallback architecture
+Provider-specific SDK details must stay inside adapters. The application should depend on a stable
+provider interface and receive a concrete implementation through configuration or composition.
+
+| Component | Responsibility |
+| --- | --- |
+| Application service | Uses a provider interface without knowing provider details |
+| Provider interface | Defines a common generation contract |
+| OpenAI adapter | Calls OpenAI and translates SDK errors |
+| Ollama adapter | Calls the Ollama HTTP API and translates errors |
+| Fallback manager | Tries the primary provider, then an eligible secondary provider |
+| Error classifier | Decides whether a failure is fallback-eligible |
+| Output validator | Validates provider output after generation |
+| Observability | Records provider selection, failures, latency, and fallback events |
+
+Target interfaces and classes from the lesson:
+
+```python
+class LLMProvider(Protocol):
+    def generate(self, request: ModelRequest) -> ModelResponse: ...
+```
+
+```python
+class FallbackManager:
+    def __init__(
+        self,
+        primary: LLMProvider,
+        fallback: LLMProvider,
+    ) -> None: ...
+
+    def generate(self, request: ModelRequest) -> ModelResponse: ...
+```
+
+The fallback manager should:
+1. Call the primary provider.
+2. Return the primary result on success.
+3. Call the secondary provider only for fallback-eligible errors.
+4. Return the secondary result on success.
+5. Raise a controlled application error when both providers fail.
+6. Re-raise permanent errors without fallback.
+
+### 7. Lab — OpenAI primary with Ollama fallback
+Goal: demonstrate OpenAI as the primary provider and Ollama as the secondary provider for ticket
+classification.
+
+Add runtime and development dependencies:
+
+```text
+uv add openai httpx python-dotenv
+uv add --dev pytest ruff
+```
+
+Configure environment variables:
+
+```text
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_MODEL=gpt-4.1-mini
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1:8b
+LLM_PRIMARY_PROVIDER=openai
+LLM_FALLBACK_PROVIDER=ollama
+LLM_TIMEOUT=10
+LLM_MAX_RETRIES=1
+```
+
+Use model names that are valid for the configured OpenAI account and the local Ollama installation.
+
+Target lesson project structure:
+
+```text
+ticket-triage/
+├── app/
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── exceptions.py
+│   │   ├── openai_provider.py
+│   │   ├── ollama_provider.py
+│   │   └── fallback_manager.py
+│   └── services/
+│       └── classification_service.py
+└── tests/
+    ├── test_providers.py
+    └── test_fallback_manager.py
+```
+
+Implementation steps:
+1. Define application exceptions such as `LLMError`, `LLMTimeoutError`, `LLMUnavailableError`,
+   `LLMRateLimitError`, `LLMAuthenticationError`, and `LLMInvalidRequestError`.
+2. Define the `LLMProvider` interface in `ticket-triage/app/llm/base.py`.
+3. Implement `OpenAIProvider` in `ticket-triage/app/llm/openai_provider.py`, translating SDK
+   exceptions into application exceptions and using explicit timeout and retry settings such as
+   `timeout=10` and `max_retries=0`.
+4. Implement `OllamaProvider` in `ticket-triage/app/llm/ollama_provider.py` with `httpx`, using
+   `OLLAMA_BASE_URL` and `OLLAMA_MODEL`.
+5. Implement `FallbackManager` in `ticket-triage/app/llm/fallback_manager.py` with
+   `FALLBACK_ELIGIBLE_ERRORS`.
+6. Configure `LLM_PRIMARY_PROVIDER`, `LLM_FALLBACK_PROVIDER`, `LLM_TIMEOUT`, and `LLM_MAX_RETRIES`
+   in `ticket-triage/.env.example`.
+7. Inject the fallback manager into `ticket-triage/app/services/classification_service.py` so
+   ticket classification does not import provider SDKs directly.
+8. Test with fake providers and no real API keys.
+
+**Lab checklist:**
+- [ ] Define a provider-independent `LLMProvider` interface.
+- [ ] Implement an OpenAI provider adapter.
+- [ ] Implement an Ollama provider adapter.
+- [ ] Add application-level LLM exceptions.
+- [ ] Implement `FallbackManager` with explicit eligibility rules.
+- [ ] Do not fall back on authentication, authorization, invalid-request, or safety-refusal errors.
+- [ ] Configure primary and secondary providers through environment variables.
+- [ ] Test primary success, primary failure with fallback success, and both providers failing.
+- [ ] Verify business logic has no provider SDK imports.
+- [ ] Record fallback attempts, latency, and failures.
+
+### 8. Production considerations
+Fallback improves availability, but a careless implementation can create cascading failures.
+
+| Risk | Mitigation |
+| --- | --- |
+| Both providers fail | Return a controlled error and record both failures |
+| Fallback provider becomes overloaded | Apply rate limits, quotas, and circuit breakers |
+| Total latency grows too large | Enforce one total request deadline across all attempts |
+| Repeated primary failures waste time | Use provider health tracking and circuit breakers |
+| Different providers produce different output quality | Validate output after either provider |
+| Duplicate consequential actions | Use idempotency keys, operation state, and human approval |
+| Unsafe error bypass | Never fall back on content-policy refusals or authorization failures |
+| Cost surprises | Track provider usage and token costs for fallback calls |
+
+Production fallback policies should add:
+- Limited retries with exponential backoff and jitter before fallback.
+- Per-provider timeouts and one application-level total deadline.
+- Provider-specific error classification.
+- Circuit breakers for repeated provider failures.
+- Request cancellation when the deadline is exceeded.
+- Logging, metrics, and alerts for fallback frequency and provider health.
+- Clear behavior when both primary and fallback providers fail.
+
+Example deadline budget: total request deadline `15 seconds`; primary provider `7 seconds`; one
+primary retry `2 seconds`; secondary provider `5 seconds`; remaining processing time `1 second`.
+
+### 9. Testing
+Run:
+
+```text
+uv run pytest -v
+uv run ruff check .
+```
+
+Tests should cover:
+- Primary provider succeeds without fallback.
+- Primary timeout triggers fallback.
+- Primary connection failure triggers fallback.
+- Primary rate limit triggers fallback when eligible.
+- Primary authentication error does not trigger fallback.
+- Primary invalid-request error does not trigger fallback.
+- Secondary provider succeeds after primary failure.
+- Both providers fail with a controlled error.
+- Invalid JSON output follows the conditional recovery policy.
+- No real API calls or API keys are used.
+
+### 10. Git commits
+Commit only the changes actually made:
+
+```text
+git add .
+git commit -m "feat(llm): implement multi-provider fallback strategies"
+```
+
+### 11. LOG.md entry
+Use `Day 79 — LLM Fallback Strategies` with:
+
+- **Component/Step:** LLM Provider Fallback Manager.
+- **Goal:** make LLM generation resilient by switching from a failed primary provider to an
+  eligible secondary provider without coupling business logic to provider SDKs.
+- **Problem/Friction:** a single provider outage, timeout, or rate limit interrupts ticket
+  classification even when another provider is healthy.
+- **Solution & Trade-offs:** add a provider interface, provider adapters, application-level
+  exceptions, and a fallback manager with explicit eligibility rules. Fallback improves
+  availability but adds latency, cost, output-quality variation, and observability requirements.
+- **Active Work:** LLM engineering — provider resilience and multi-provider routing.
+- **Code State:** fallback manager and provider adapters implemented or under development; tests
+  use fakes and no real API keys.
+- **Next Steps:** implement LLM retry strategies with backoff, jitter, and provider health-aware
+  policies.
+
+### 12. Knowledge assessment
+Be able to answer:
+- What is the difference between retry and fallback?
+- Which errors should and should not trigger fallback?
+- Why must authentication and invalid-request errors not be sent to another provider?
+- Why should a content-policy refusal not be bypassed with a fallback provider?
+- How do you prevent fallback from creating cascading failures?
+- How does a provider interface keep ticket classification independent from OpenAI or Ollama?
+- How should primary success, fallback success, and total failure be tested?
+
+Strong interview answer:
+
+> I model providers behind a common interface and translate SDK errors into application-level
+> exceptions. The fallback manager calls the primary provider first, returns on success, and only
+> uses the secondary provider for eligible transient failures such as timeouts, connection errors,
+> and server errors. I do not fall back on authentication, authorization, invalid-request, or
+> safety-refusal errors because another provider cannot fix those conditions. In production I add
+> limited retries, per-provider timeouts, a total deadline, circuit breakers, and metrics, and I
+> validate output independently of the provider.
+
+### 13. Upcoming lessons
+| Day | Topic |
+| --- | --- |
+| Day 80 | LLM Retry Strategies — Backoff, jitter, retry policies |
+| Day 81 | Circuit Breaker Pattern — Provider health and recovery |
+| Day 82 | LLM Rate Limiting — Request and token limits |
+| Day 83 | LLM Caching — Semantic and response caching |
+| Day 84 | LLM Cost Optimization — Token and provider costs |
+| Day 85 | LLM Observability — Tracing, metrics, logging |
+
+### Current implementation status
+No fallback manager, fallback configuration, or fallback tests exist in the repository. No files
+match `*fallback*`, `.env.example` contains only `OPENAI_API_KEY` and `OPENAI_MODEL`, and
+`src/ai_agent/config.py` loads only those two settings. `pyproject.toml` does not yet include an
+`ollama` or `httpx` dependency.
+
+`src/ai_agent/application/errors.py` defines `LLMError`, `LLMTransientError`, `LLMRateLimitError`,
+`LLMTimeoutError`, `LLMConnectionError`, `LLMPermanentError`, `LLMAuthenticationError`,
+`LLMInvalidRequestError`, and `LLMResponseError`, but providers do not translate SDK exceptions
+into these types. `src/ai_agent/application/retry.py` now implements full-jitter backoff, an
+injectable `sleep`, maximum delay, and `retry_after` handling, but it does not enforce a total
+deadline.
+
+`src/ai_agent/providers/openai_provider.py` constructs `OpenAI` with `timeout=30.0` and
+`max_retries=2`, converts provider exceptions to `RuntimeError`, and still has an undefined
+`Iterator` import in `stream()`. `src/ai_agent/providers/ollama_provider.py` uses the `ollama`
+SDK and a string-based prompt interface, while `src/ai_agent/application/model_client.py` is also
+string-based and the rest of the application mostly uses `ModelRequest`/`ModelResponse`.
+`src/ai_agent/application/ticket_classifier.py` constructs `OpenAI` directly and reads
+`OPENAI_MODEL` from the environment.
+
+The current test suite does not cover fallback. `uv run pytest -q` is currently blocked during
+collection by the missing `LLMValidationError` import in
+`tests/application/test_ticket_validation.py` and the undefined `Iterator` in
+`src/ai_agent/providers/openai_provider.py`. `uv run ruff check .` reports pre-existing lint
+errors.
+
+### Definition of done
+- [ ] I can explain retry, fallback, and circuit breaker responsibilities.
+- [ ] I can classify which provider errors are fallback-eligible.
+- [ ] I can implement a provider-independent `LLMProvider` interface.
+- [ ] I can implement OpenAI and Ollama adapters without leaking SDK details.
+- [ ] I can implement `FallbackManager` with explicit eligibility rules.
+- [ ] I can keep business logic free of provider SDK imports.
+- [ ] I can prevent cascading failures with deadlines, quotas, and health controls.
+- [ ] I can test fallback paths with fake providers and no real API keys.
+- [ ] Implement fallback configuration and a production provider factory.
+- [ ] Add fallback manager and provider adapter tests.
+- [ ] Ensure tests and Ruff pass.
+- [ ] Update `LOG.md` and commit the work.
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    A[Ticket classification request] --> B[Single LLM provider call]
+    B -- Success --> C[Classification result]
+    B -- Failure --> D[Controlled error]
+```
+
+```mermaid
+flowchart TD
+    A[Ticket classification request] --> F[Application service]
+    F --> R[Provider router]
+    R --> H{Primary healthy?}
+    H -- Yes --> P[Primary provider]
+    H -- No --> G[Fallback manager]
+    P -- Success --> V[Output validator]
+    P -- Eligible failure --> G
+    P -- Permanent failure --> X[Controlled error]
+    G --> S[Secondary provider]
+    S -- Success --> V
+    S -- Failure --> X
+    V --> C[Classification result]
+```
+
+```mermaid
+sequenceDiagram
+    participant App as Application service
+    participant FM as Fallback manager
+    participant P as Primary provider
+    participant S as Secondary provider
+    App->>FM: Generate request
+    FM->>P: Generate
+    P-->>FM: Eligible failure
+    FM->>S: Generate
+    S-->>FM: Response
+    FM-->>App: Response
+```
+

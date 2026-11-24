@@ -6200,3 +6200,1642 @@ flowchart TD
     H --> I[Maintain accuracy and reliability]
 ```
 
+## Day 24 — LLM Observability (Lesson Day 85)
+
+Day: Day 85 of 85
+Duration: 2 hours
+Difficulty: Medium
+Stage: Stage 5 — LLM Engineering | Track A — AI Engineer
+Topic: **LLM Observability**
+Project: **ticket-triage** (`ai-agent-py`)
+
+### 1. What problem are we solving?
+
+Ticket-triage is running in production and processes thousands of support tickets. It uses an LLM
+provider, model routing, retry and fallback strategies, circuit breakers, rate limiting, caching,
+cost tracking, and budget enforcement.
+
+Users report slower classification and some incorrect categories. Application logs show only:
+
+```text
+INFO: Request received
+INFO: Classification started
+INFO: Classification completed
+```
+
+Those logs cannot answer:
+
+- Which provider handled the request?
+- Which model was selected?
+- How long did the provider take?
+- How many tokens were consumed?
+- Did the request use a retry or fallback?
+- Was the result served from cache?
+- Why did the classification fail?
+- Which prompt version was used?
+- How much did the request cost?
+
+This is an observability problem. Observability means understanding internal behavior by analyzing
+external outputs: logs, metrics, and traces.
+
+### 2. Learning objectives
+
+By the end of this lesson, you should be able to:
+
+1. Explain the three pillars of observability.
+2. Implement structured JSON logging.
+3. Design useful LLM-specific metrics.
+4. Understand distributed tracing and trace context.
+5. Trace a request across multiple services.
+6. Monitor token usage, latency, errors, and cost.
+7. Understand OpenTelemetry.
+8. Design an LLM observability architecture.
+9. Identify sensitive data that must not be logged.
+10. Build an observability module for ticket-triage.
+
+### 3. The three pillars of observability
+
+| Pillar | Description | Example |
+| --- | --- | --- |
+| Logs | Detailed records of events | LLM request failed with timeout |
+| Metrics | Numerical measurements aggregated over time | LLM request latency = 850 ms |
+| Traces | Journey of one request through components | API to Classification to LLM to Validation |
+
+#### 3.1 Logs
+
+Logs describe individual events:
+
+```json
+{
+  "timestamp": "2026-11-24T14:30:00Z",
+  "level": "INFO",
+  "event": "llm_request_completed",
+  "request_id": "req-123",
+  "provider": "openai",
+  "model": "example-model",
+  "duration_ms": 850,
+  "input_tokens": 1200,
+  "output_tokens": 180,
+  "status": "success"
+}
+```
+
+Logs answer: what happened, when it happened, which component was involved, and which request
+experienced the problem.
+
+#### 3.2 Metrics
+
+Metrics are aggregated numerical measurements.
+
+| Metric | Meaning |
+| --- | --- |
+| `llm_requests_total` | Total number of LLM requests |
+| `llm_errors_total` | Total number of LLM errors |
+| `llm_request_duration_seconds` | Request duration |
+| `llm_input_tokens_total` | Input tokens consumed |
+| `llm_output_tokens_total` | Output tokens generated |
+| `llm_cost_total` | Total LLM spending |
+| `llm_cache_hits_total` | Number of cache hits |
+| `llm_retries_total` | Number of retries |
+
+Metrics answer: is the application healthy, is latency increasing, are errors increasing, is
+spending increasing, and is the system approaching capacity?
+
+#### 3.3 Traces
+
+A trace represents the journey of one request through the application. A trace contains spans:
+
+- Trace: the complete request.
+- Span: one operation within the request.
+- Parent span: the operation that initiated another operation.
+- Child span: an operation performed by its parent.
+
+| Span | Duration |
+| --- | --- |
+| HTTP request | 1,200 ms |
+| Ticket service | 50 ms |
+| Cache lookup | 10 ms |
+| Model routing | 5 ms |
+| LLM provider | 1,000 ms |
+| Output validation | 35 ms |
+| Database persistence | 100 ms |
+
+The trace shows that most latency comes from the LLM provider, not the application code.
+
+### 4. LLM-specific observability
+
+Traditional application monitoring is insufficient for LLM applications because models introduce
+behavior that ordinary HTTP metrics do not expose.
+
+#### 4.1 Request-level observability
+
+Capture:
+
+- Request ID.
+- Trace ID.
+- Tenant ID, using a controlled identifier.
+- Task type.
+- Provider.
+- Model.
+- Prompt version.
+- Request status.
+- Duration.
+- Retry count.
+- Fallback usage.
+- Cache status.
+
+#### 4.2 Token observability
+
+Capture:
+
+- Input tokens.
+- Output tokens.
+- Cached input tokens.
+- Total tokens.
+- Tokens per successful task.
+
+These measurements help identify oversized prompts and inefficient model usage.
+
+#### 4.3 Quality observability
+
+A successful HTTP response does not necessarily mean the LLM produced a correct result.
+
+| Metric | Description |
+| --- | --- |
+| Classification accuracy | Correct classifications / evaluated classifications |
+| Schema validation rate | Responses matching the required schema |
+| Invalid output rate | Responses failing validation |
+| Human correction rate | AI classifications changed by reviewers |
+| Escalation rate | Tickets requiring manual review |
+| Unknown category rate | Tickets not confidently classified |
+
+Quality metrics must be calculated against an appropriate evaluation dataset or human-reviewed
+outcomes.
+
+#### 4.4 Cost observability
+
+Connect the Day 84 cost tracker and monitor:
+
+- Cost per request.
+- Cost per successful classification.
+- Cost per tenant.
+- Cost per model.
+- Daily and monthly spending.
+- Cost increase over time.
+
+#### 4.5 Reliability observability
+
+Track:
+
+- Provider failure rate.
+- Retry rate.
+- Fallback rate.
+- Circuit breaker state.
+- Rate-limit errors.
+- Timeout rate.
+- Cache hit rate.
+
+### 5. Structured logging with Python
+
+Project structure for the observability module:
+
+```text
+app/
+└── observability/
+    ├── __init__.py
+    ├── logging_config.py
+    ├── metrics.py
+    └── tracing.py
+```
+
+#### Step 1 — configure structured logging
+
+`app/observability/logging_config.py`:
+
+```python
+import json
+import logging
+from datetime import datetime, timezone
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        for field in (
+            "event",
+            "request_id",
+            "trace_id",
+            "provider",
+            "model",
+            "duration_ms",
+        ):
+            value = getattr(record, field, None)
+            if value is not None:
+                log_entry[field] = value
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry)
+
+
+def configure_logging() -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+```
+
+Usage:
+
+```python
+import logging
+
+from app.observability.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger("ticket_triage")
+
+logger.info(
+    "LLM request completed",
+    extra={
+        "event": "llm_request_completed",
+        "request_id": "req-123",
+        "provider": "openai",
+        "model": "example-model",
+        "duration_ms": 850,
+    },
+)
+```
+
+Example output:
+
+```json
+{
+  "timestamp": "2026-11-24T14:30:00+00:00",
+  "level": "INFO",
+  "logger": "ticket_triage",
+  "message": "LLM request completed",
+  "event": "llm_request_completed",
+  "request_id": "req-123",
+  "provider": "openai",
+  "model": "example-model",
+  "duration_ms": 850
+}
+```
+
+The example formatter includes only selected fields. A production formatter should also handle
+exceptions, correlation IDs, deployment metadata, and validated structured attributes.
+
+### 6. Implement LLM metrics
+
+Use Prometheus-compatible instrumentation:
+
+```text
+uv add prometheus-client
+```
+
+`app/observability/metrics.py`:
+
+```python
+from prometheus_client import Counter, Histogram
+
+LLM_REQUESTS = Counter(
+    "llm_requests_total",
+    "Total number of LLM requests",
+    ["provider", "model", "status"],
+)
+
+LLM_REQUEST_DURATION = Histogram(
+    "llm_request_duration_seconds",
+    "LLM request duration",
+    ["provider", "model"],
+)
+
+LLM_INPUT_TOKENS = Counter(
+    "llm_input_tokens_total",
+    "Total LLM input tokens",
+    ["provider", "model"],
+)
+
+LLM_OUTPUT_TOKENS = Counter(
+    "llm_output_tokens_total",
+    "Total LLM output tokens",
+    ["provider", "model"],
+)
+
+LLM_RETRIES = Counter(
+    "llm_retries_total",
+    "Total LLM retries",
+    ["provider"],
+)
+
+LLM_CACHE_HITS = Counter(
+    "llm_cache_hits_total",
+    "Total LLM cache hits",
+    ["provider"],
+)
+
+LLM_COST = Counter(
+    "llm_cost_total",
+    "Total LLM cost in currency units",
+    ["provider", "model"],
+)
+
+
+def record_llm_request(
+    provider: str,
+    model: str,
+    status: str,
+    duration_seconds: float,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    LLM_REQUESTS.labels(provider, model, status).inc()
+    LLM_REQUEST_DURATION.labels(provider, model).observe(duration_seconds)
+    LLM_INPUT_TOKENS.labels(provider, model).inc(input_tokens)
+    LLM_OUTPUT_TOKENS.labels(provider, model).inc(output_tokens)
+```
+
+Usage:
+
+```python
+from app.observability.metrics import record_llm_request
+
+record_llm_request(
+    provider="openai",
+    model="example-model",
+    status="success",
+    duration_seconds=0.85,
+    input_tokens=1200,
+    output_tokens=180,
+)
+```
+
+A `Histogram` records observations in buckets, enabling latency percentiles:
+
+| Percentile | Meaning |
+| --- | --- |
+| p50 | Median latency |
+| p90 | 90% of requests finish within this duration |
+| p95 | 95% of requests finish within this duration |
+| p99 | 99% of requests finish within this duration |
+
+Do not use request IDs, user IDs, ticket IDs, or other high-cardinality values as Prometheus
+labels. Keep those details in logs and traces.
+
+### 7. Distributed tracing with OpenTelemetry
+
+OpenTelemetry is an open-source framework for collecting traces, metrics, and logs with
+standardized instrumentation and export mechanisms.
+
+Install:
+
+```text
+uv add opentelemetry-api opentelemetry-sdk
+```
+
+`app/observability/tracing.py`:
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+
+
+def configure_tracing() -> None:
+    resource = Resource.create(
+        {
+            "service.name": "ticket-triage",
+            "service.version": "1.0.0",
+            "deployment.environment": "development",
+        }
+    )
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+    trace.set_tracer_provider(provider)
+
+
+def get_tracer():
+    return trace.get_tracer("ticket-triage")
+```
+
+Usage:
+
+```python
+from app.observability.tracing import configure_tracing, get_tracer
+
+configure_tracing()
+tracer = get_tracer()
+
+with tracer.start_as_current_span("ticket.classification") as span:
+    span.set_attribute("ticket.category", "order_status")
+    with tracer.start_as_current_span("llm.generate"):
+        print("Calling LLM provider")
+```
+
+This creates a parent span and a child span. The console exporter is for learning; production
+applications should export telemetry to a collector or supported backend.
+
+#### Trace context propagation
+
+In a distributed application, requests pass through several services. Propagate trace context so
+each service contributes spans to the same trace.
+
+OpenTelemetry commonly uses W3C Trace Context headers:
+
+```text
+traceparent
+tracestate
+```
+
+This correlates a request across services without inventing a different trace ID in each
+component.
+
+### 8. Observability architecture
+
+```mermaid
+flowchart TD
+    A[Client request] --> B[FastAPI]
+    B --> C[Ticket service]
+    C --> D[Classification service]
+    D --> E[LLM provider]
+    D --> F[OpenTelemetry instrumentation]
+    E --> F
+    F --> G[Structured logs]
+    F --> H[OpenTelemetry Collector]
+    H --> I[Trace backend]
+    H --> J[Metrics backend]
+    G --> K[Log collector]
+    K --> L[Log backend]
+    I --> M[Observability dashboard]
+    J --> M
+    L --> M
+    M --> N[Alerts]
+```
+
+| Layer | Technology | Responsibility |
+| --- | --- | --- |
+| Instrumentation | OpenTelemetry | Generate telemetry |
+| Logs | Python logging | Record application events |
+| Metrics | Prometheus client | Collect numerical measurements |
+| Collector | OpenTelemetry Collector | Receive and export telemetry |
+| Metrics backend | Prometheus | Store and query metrics |
+| Trace backend | Jaeger or Tempo | Explore traces |
+| Log backend | Loki or Elasticsearch | Search logs |
+| Dashboard | Grafana | Visualize observability data |
+| Alerts | Alertmanager | Notify on incidents |
+
+You do not need all these services today. First establish instrumentation in the application.
+
+### 9. LLM observability security
+
+Observability introduces a major security concern: logs and traces may contain sensitive data.
+
+Never automatically log:
+
+- API keys.
+- Access tokens.
+- Passwords.
+- Customer personal information.
+- Full prompts containing sensitive information.
+- Full model responses containing private data.
+- Database credentials.
+- Payment information.
+
+Prefer logging metadata:
+
+```json
+{
+  "event": "llm_request_completed",
+  "request_id": "req-123",
+  "provider": "openai",
+  "model": "example-model",
+  "prompt_version": "ticket-classification-v3",
+  "input_tokens": 1200,
+  "output_tokens": 180,
+  "status": "success"
+}
+```
+
+Additional production controls:
+
+- Redaction before export.
+- Role-based access control.
+- Log retention policies.
+- Encryption in transit and at rest.
+- Tenant isolation.
+- Restricted trace access.
+- Audit logging for observability access.
+
+Hashing a customer identifier does not automatically make it anonymous. Treat pseudonymous
+identifiers as potentially sensitive.
+
+### 10. Hands-on lab — integrate observability into ticket-triage
+
+#### Step 1 — final project structure
+
+```text
+ticket-triage/
+├── app/
+│   ├── llm/
+│   │   ├── cost_tracker.py
+│   │   ├── budget_manager.py
+│   │   └── ...
+│   ├── observability/
+│   │   ├── __init__.py
+│   │   ├── logging_config.py
+│   │   ├── metrics.py
+│   │   └── tracing.py
+│   ├── services/
+│   └── main.py
+├── tests/
+│   ├── test_observability_logging.py
+│   └── test_observability_metrics.py
+├── pyproject.toml
+└── .env
+```
+
+#### Step 2 — logging tests
+
+`tests/test_observability_logging.py`:
+
+```python
+import json
+import logging
+
+from app.observability.logging_config import JsonFormatter
+
+
+def test_json_formatter_includes_event():
+    formatter = JsonFormatter()
+    record = logging.LogRecord(
+        name="ticket_triage",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=1,
+        msg="LLM request completed",
+        args=(),
+        exc_info=None,
+    )
+    record.event = "llm_request_completed"
+    record.request_id = "req-123"
+    record.provider = "openai"
+    result = formatter.format(record)
+    data = json.loads(result)
+    assert data["event"] == "llm_request_completed"
+    assert data["request_id"] == "req-123"
+    assert data["provider"] == "openai"
+```
+
+#### Step 3 — metrics tests
+
+`tests/test_observability_metrics.py`:
+
+```python
+from prometheus_client import CollectorRegistry, Counter, Histogram
+
+
+def test_metrics_can_record_requests():
+    registry = CollectorRegistry()
+    requests = Counter(
+        "test_llm_requests",
+        "Test LLM requests",
+        ["provider", "status"],
+        registry=registry,
+    )
+    duration = Histogram(
+        "test_llm_duration_seconds",
+        "Test request duration",
+        registry=registry,
+    )
+    requests.labels(provider="openai", status="success").inc()
+    duration.observe(0.85)
+    samples = list(registry.collect())
+    assert len(samples) == 2
+```
+
+#### Step 4 — run tests and linting
+
+```text
+uv run pytest -v
+uv run ruff check .
+```
+
+#### Step 5 — instrument the actual LLM provider
+
+For every LLM call, capture:
+
+```text
+request_id
+trace_id
+provider
+model
+prompt_version
+request_start_time
+request_duration
+input_tokens
+output_tokens
+cached_input_tokens
+cost
+retry_count
+fallback_used
+cache_hit
+status
+error_type
+```
+
+Use the same request and trace identifiers across the classification workflow.
+
+#### Step 6 — define production alerts
+
+| Alert | Example condition |
+| --- | --- |
+| High LLM latency | p95 latency exceeds target |
+| High error rate | LLM error ratio exceeds threshold |
+| High spending | Daily cost exceeds budget |
+| Retry spike | Retry rate increases sharply |
+| Fallback spike | Fallback usage increases unexpectedly |
+| Invalid output spike | Schema validation failures increase |
+| Provider outage | Provider failures persist |
+
+Set thresholds using service-level objectives and historical baseline, not arbitrary values.
+
+### 11. Production design considerations
+
+| Area | Production requirement |
+| --- | --- |
+| Logging | Centralized structured logging |
+| Tracing | Automatic HTTP and database instrumentation |
+| Metrics | Export and scrape Prometheus metrics |
+| Context propagation | W3C Trace Context |
+| Sampling | Control trace volume and cost |
+| Security | Redaction and access controls |
+| Reliability | Non-blocking telemetry export |
+| Performance | Avoid excessive instrumentation overhead |
+| Retention | Define retention and deletion policies |
+| Multi-tenancy | Protect tenant data in telemetry |
+
+Sampling strategies:
+
+| Strategy | Description |
+| --- | --- |
+| Head-based sampling | Decide whether to sample when the trace begins |
+| Tail-based sampling | Decide after observing the completed trace |
+| Error-focused sampling | Retain more failed or slow traces |
+| Probability sampling | Retain a configured proportion of traces |
+
+For ticket-triage, retain more traces for failed, slow, and unusual requests, while sampling
+routine successful traffic. Do not rely on sampled traces for exact business counts; use metrics
+and durable business records for that.
+
+### 12. Interview questions
+
+1. What are the three pillars of observability?
+2. What is the difference between monitoring and observability?
+3. What is the difference between a trace and a span?
+4. Why are structured logs preferable to unstructured logs?
+5. What is distributed tracing?
+6. What is OpenTelemetry?
+7. How would you trace an LLM request across multiple services?
+8. Which metrics are important for an LLM application?
+9. How do you identify whether latency comes from your application or the model provider?
+10. Why should request IDs not be Prometheus metric labels?
+11. What is the difference between head-based and tail-based sampling?
+12. How do you prevent sensitive information from appearing in traces and logs?
+
+Architecture interview scenario: a production AI application's API response time increases from
+1.5 seconds to 8 seconds.
+
+A strong investigation covers:
+
+- Request-level tracing.
+- Span duration analysis.
+- LLM provider latency.
+- Retry and fallback behavior.
+- Database latency.
+- Cache hit rate.
+- Token consumption.
+- Error rates.
+- Provider status.
+- Metrics and alerting.
+
+### Current implementation status
+
+No `app/observability/` package exists. There is no `logging_config.py`, `metrics.py`, `tracing.py`,
+`test_observability_logging.py`, or `test_observability_metrics.py`. `pyproject.toml` declares only
+`openai`, `pydantic`, and `python-dotenv` as runtime dependencies, with `pytest` and `ruff` as dev
+dependencies; it has no `prometheus-client`, `opentelemetry-api`, or `opentelemetry-sdk`.
+
+The repository has no FastAPI dependency or API layer. `src/ai_agent/main.py` is a console entry
+point that calls `CustomerSupportAssistant.answer()` and prints the response plus input and output
+token counts. It does not configure structured logging, metrics, or tracing.
+
+`src/ai_agent/domain/models.py` defines `ModelResponse` with `text`, `model`, `input_tokens`,
+`output_tokens`, and `total_tokens`, but no `request_id`, `trace_id`, `tenant_id`,
+`prompt_version`, `cached_input_tokens`, `cost`, `retry_count`, `fallback_used`, `cache_hit`,
+`status`, or `error_type`. The OpenAI provider extracts basic input and output usage, but there is
+no instrumentation around the call to record duration, provider status, retries, or spans.
+
+Day 84's cost tracker, budget manager, model routing, cache, application-level rate limiter,
+circuit breaker, and fallback manager are still documentation targets rather than implemented
+components, so cost, cache, retry, and reliability telemetry cannot yet be connected to real
+application layers.
+
+### Definition of done
+
+- [x] Explain logs, metrics, and traces and what each answers.
+- [x] Identify LLM-specific request, token, quality, cost, and reliability signals.
+- [x] Explain trace context propagation with W3C Trace Context headers.
+- [x] Explain OpenTelemetry and the roles of collector, backends, dashboards, and alerts.
+- [x] Identify sensitive data that must never be logged or traced.
+- [x] Explain high-cardinality label risks and sampling strategies.
+- [x] Describe how to investigate increased latency with span analysis.
+- [ ] Add the observability package and dependencies.
+- [ ] Implement and test `JsonFormatter` and `configure_logging`.
+- [ ] Implement and test Prometheus counters and histograms.
+- [ ] Implement OpenTelemetry tracing with parent and child spans.
+- [ ] Add request and trace identifiers to the LLM request path.
+- [ ] Emit duration, token, status, error, retry, fallback, cache, and cost telemetry.
+- [ ] Add redaction, access controls, retention policies, and production alerts.
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    A[Incoming request] --> T[Trace root span]
+    T --> S1[HTTP request span]
+    S1 --> S2[Ticket service span]
+    S2 --> S3[Cache lookup span]
+    S3 -- Miss --> S4[Model routing span]
+    S4 --> S5[LLM provider span]
+    S5 --> S6[Output validation span]
+    S6 --> S7[Database persistence span]
+    T --> L[Structured log events]
+    T --> M[Metrics observations]
+```
+
+```mermaid
+flowchart TD
+    A[Application instrumentation] --> B[Structured logs]
+    A --> C[Prometheus metrics]
+    A --> D[OpenTelemetry spans]
+    D --> E[OpenTelemetry Collector]
+    B --> F[Log backend]
+    C --> G[Metrics backend]
+    E --> H[Trace backend]
+    F --> I[Grafana dashboard]
+    G --> I
+    H --> I
+    I --> J[Alertmanager]
+```
+
+```mermaid
+flowchart TD
+    A[Latency increased from 1.5s to 8s] --> B[Open request trace]
+    B --> C{Provider span dominates?}
+    C -- Yes --> D[Check provider status and model latency]
+    C -- No --> E[Check application spans]
+    D --> F[Check retries and fallback]
+    E --> G[Check cache and validation]
+    F --> H[Check tokens and cost]
+    G --> H
+    H --> I[Check error rate and alerts]
+    I --> J[Identify bottleneck]
+```
+
+## Day 25 — LLM Evaluation Frameworks (Lesson Day 86)
+
+Day: Day 86
+Duration: 2 hours
+Difficulty: Medium
+Stage: Stage 5 — LLM Engineering | Track A — AI Engineer
+Topic: **LLM Evaluation Frameworks**
+Project: **ticket-triage** (`ai-agent-py`)
+
+### 1. What problem are we solving?
+
+Ticket-triage now has model routing, retry and fallback strategies, circuit breakers, rate
+limiting, caching, cost tracking, structured logging, metrics, and distributed tracing. A new
+problem appears: a prompt change reduces token consumption, but some tickets are classified
+incorrectly.
+
+Input:
+
+```text
+My order #4821 has not arrived.
+```
+
+Expected output:
+
+```json
+{
+  "category": "order_status",
+  "order_id": "4821",
+  "needs_order_lookup": true
+}
+```
+
+Actual output:
+
+```json
+{
+  "category": "refund",
+  "order_id": "4821",
+  "needs_order_lookup": false
+}
+```
+
+The API returns HTTP 200, the JSON is valid, and the model call succeeds, but the business result
+is incorrect.
+
+**Operational success does not guarantee AI quality.** We need a repeatable evaluation process to
+measure whether an LLM produces correct, useful, and reliable results.
+
+### 2. Learning objectives
+
+By the end of this lesson, you should be able to:
+
+1. Explain offline and online LLM evaluation.
+2. Build a golden evaluation dataset.
+3. Understand classification evaluation metrics.
+4. Measure exact-match and semantic similarity.
+5. Evaluate structured LLM output.
+6. Understand LLM-as-a-judge.
+7. Design regression tests for prompts and models.
+8. Compare different models using the same dataset.
+9. Build a reusable Python evaluation framework.
+10. Integrate evaluation into CI/CD.
+
+### 3. What is LLM evaluation?
+
+LLM evaluation measures model outputs against defined criteria.
+
+For ticket classification, criteria might include:
+
+- Correct category.
+- Correct order ID extraction.
+- Correct decision to perform an order lookup.
+- Valid JSON structure.
+- Appropriate handling of ambiguous tickets.
+- Consistent behavior across ticket types.
+
+Evaluation answers: is the model accurate, is the new prompt better, does a cheaper model perform
+well enough, did a model upgrade introduce regressions, and does the system behave safely on
+difficult inputs?
+
+#### 3.1 Offline evaluation
+
+Offline evaluation happens before deploying a model or prompt change.
+
+```mermaid
+flowchart TD
+    A[Evaluation dataset] --> B[Model or prompt]
+    B --> C[Generated results]
+    C --> D[Evaluation metrics]
+    D --> E{Pass or fail?}
+```
+
+Uses: compare two models, compare prompt versions, test a classification strategy, detect
+regressions before deployment.
+
+#### 3.2 Online evaluation
+
+Online evaluation measures application behavior using real production traffic.
+
+Examples:
+
+- Human review of AI classifications.
+- Human correction rate.
+- Customer feedback.
+- Escalation rate.
+- Production schema validation rate.
+- Delayed outcome-based quality measurements.
+
+Online evaluation identifies problems that an offline dataset may not represent.
+
+#### 3.3 Offline vs online
+
+| Area | Offline evaluation | Online evaluation |
+| --- | --- | --- |
+| Environment | Test environment | Production |
+| Dataset | Fixed evaluation dataset | Real application traffic |
+| Purpose | Compare model behavior | Monitor actual quality |
+| Cost | Controlled | Production spending |
+| Risk | Low | Potential customer impact |
+| Feedback | Expected outputs | Human feedback and real outcomes |
+
+You need both.
+
+### 4. Build a golden evaluation dataset
+
+A golden dataset is a collection of representative inputs with trusted expected outputs. It is the
+foundation of the evaluation process.
+
+```text
+evals/
+├── datasets/
+│   └── ticket_classification.jsonl
+├── results/
+├── metrics/
+├── evaluate.py
+└── README.md
+```
+
+#### 4.1 Dataset design
+
+Each line in `evals/datasets/ticket_classification.jsonl` is one evaluation case:
+
+```json
+{"id":"case-001","input":"My order #4821 has not arrived.","expected":{"category":"order_status","order_id":"4821","needs_order_lookup":true}}
+{"id":"case-002","input":"I want a refund for order #1002.","expected":{"category":"refund","order_id":"1002","needs_order_lookup":false}}
+{"id":"case-003","input":"The product arrived damaged.","expected":{"category":"product_issue","order_id":null,"needs_order_lookup":false}}
+{"id":"case-004","input":"I cannot log into my account.","expected":{"category":"account_access","order_id":null,"needs_order_lookup":false}}
+{"id":"case-005","input":"Where is my package for order #9001?","expected":{"category":"order_status","order_id":"9001","needs_order_lookup":true}}
+```
+
+These examples are illustrative. The actual golden dataset should reflect documented
+classification rules and confirmed business requirements.
+
+#### 4.2 Dataset quality
+
+| Category | Example |
+| --- | --- |
+| Normal cases | Straightforward order status |
+| Edge cases | Multiple order IDs |
+| Ambiguous cases | Unclear customer intent |
+| Negative cases | No identifiable support request |
+| Long inputs | Large customer message |
+| Noisy inputs | Typos and informal language |
+| Adversarial inputs | Instructions embedded in ticket content |
+| Missing information | Customer does not provide an order ID |
+
+Avoid a dataset containing only easy examples. A model that performs well on straightforward
+cases may still fail on real-world tickets.
+
+#### 4.3 Dataset separation
+
+For rigorous evaluation, maintain separate datasets:
+
+- Development dataset: used during prompt development.
+- Validation dataset: used to compare candidate changes.
+- Test dataset: reserved for final unbiased evaluation.
+- Production review dataset: sampled from actual reviewed outcomes.
+
+Do not repeatedly tune prompts against the final test dataset. That creates evaluation leakage.
+
+### 5. Classification evaluation metrics
+
+#### 5.1 Accuracy
+
+```text
+Accuracy = CorrectPredictions / TotalPredictions
+```
+
+If 100 tickets are evaluated and 90 are correctly classified, accuracy is 90%. Accuracy is useful
+but can hide problems when classes are imbalanced. If 95% of tickets belong to `order_status`, a
+model that always predicts `order_status` achieves 95% accuracy while failing every other
+category.
+
+#### 5.2 Precision
+
+```text
+Precision = TP / (TP + FP)
+```
+
+Precision measures how many predicted positive cases were actually positive. For refund
+classification, high precision means fewer non-refund tickets are incorrectly classified as
+refunds.
+
+#### 5.3 Recall
+
+```text
+Recall = TP / (TP + FN)
+```
+
+Recall measures how many actual positive cases were correctly identified. Low recall for a
+critical support category means important tickets are being missed.
+
+#### 5.4 F1 score
+
+```text
+F1 = 2 x (Precision x Recall) / (Precision + Recall)
+```
+
+Use F1 when both precision and recall matter.
+
+#### 5.5 Confusion matrix
+
+A confusion matrix shows which categories the model confuses.
+
+| Actual / Predicted | Order status | Refund | Product issue |
+| --- | --- | --- | --- |
+| Order status | 40 | 3 | 2 |
+| Refund | 2 | 25 | 1 |
+| Product issue | 1 | 2 | 24 |
+
+This helps identify systematic classification errors.
+
+### 6. Evaluation techniques for LLM applications
+
+| Technique | Compares | Best for |
+| --- | --- | --- |
+| Exact-match evaluation | Predicted result against expected result | IDs, enumerated categories, booleans, structured data |
+| Semantic evaluation | Meaning similarity | Summaries, explanations, generated responses |
+| Rule-based evaluation | Deterministic business rules | Required fields, JSON schema, numeric constraints, policy compliance |
+| LLM-as-a-judge | Model-assessed quality | Relevance, helpfulness, faithfulness, subjective quality |
+
+#### 6.1 Exact-match evaluation
+
+```python
+expected = {
+    "category": "order_status",
+    "order_id": "4821",
+    "needs_order_lookup": True,
+}
+predicted = {
+    "category": "order_status",
+    "order_id": "4821",
+    "needs_order_lookup": True,
+}
+is_correct = predicted == expected
+```
+
+Exact match is deterministic but can be too strict for natural-language generation. For
+classification, exact matching selected fields is often useful.
+
+#### 6.2 Field-level evaluation
+
+Instead of treating the entire response as one result, evaluate individual fields.
+
+| Field | Expected | Predicted | Correct |
+| --- | --- | --- | --- |
+| category | order_status | order_status | Yes |
+| order_id | 4821 | 4821 | Yes |
+| needs_order_lookup | true | false | No |
+
+This identifies precisely where the model failed.
+
+#### 6.3 Semantic similarity
+
+For generated summaries, two responses can express the same meaning using different words.
+Semantic similarity methods include embedding cosine similarity, BERTScore, task-specific semantic
+evaluation, human review, and LLM-as-a-judge.
+
+Semantic similarity does not prove factual correctness. A response can be semantically similar
+while containing an incorrect order number or business decision.
+
+### 7. LLM-as-a-judge
+
+LLM-as-a-judge uses one model to evaluate the output of another model.
+
+Example:
+
+```text
+Input ticket: "My order #4821 has not arrived."
+Expected: Category = order_status
+Generated: Category = refund
+
+Judge: Incorrect classification.
+Reason: The customer asks about a delayed order, not a refund.
+```
+
+#### 7.1 Judge evaluation criteria
+
+| Criterion | Question |
+| --- | --- |
+| Correctness | Is the category correct? |
+| Completeness | Were required fields extracted? |
+| Consistency | Does the result follow classification rules? |
+| Relevance | Does the output address the ticket? |
+| Format | Does the output follow the expected schema? |
+
+#### 7.2 Example judge prompt
+
+```text
+You are an independent evaluation judge.
+
+Evaluate the predicted ticket classification.
+
+Input ticket:
+{ticket}
+
+Expected classification:
+{expected}
+
+Predicted classification:
+{predicted}
+
+Evaluate:
+1. Category correctness.
+2. Entity extraction correctness.
+3. Lookup decision correctness.
+
+Return JSON:
+{
+  "correct": true,
+  "score": 1,
+  "reason": "Short explanation"
+}
+
+Do not reward a response merely because it is well written.
+Evaluate factual and business correctness.
+```
+
+#### 7.3 Risks of LLM-as-a-judge
+
+- Judge model can make mistakes.
+- Judge may favor certain writing styles.
+- Judge may be inconsistent across runs.
+- Judge can share biases with the evaluated model.
+- Judge evaluation introduces additional cost.
+- Prompt injection in evaluation data may influence the judge.
+
+For deterministic classification fields, use code-based evaluation first. Use an LLM judge for
+criteria that are difficult to evaluate with simple rules. For important decisions, compare judge
+results with human-reviewed samples.
+
+### 8. Hands-on lab — build an evaluation framework
+
+#### Step 1 — project structure
+
+```text
+ticket-triage/
+├── app/
+│   └── ...
+├── evals/
+│   ├── __init__.py
+│   ├── datasets/
+│   │   └── ticket_classification.jsonl
+│   ├── results/
+│   ├── evaluator.py
+│   ├── metrics.py
+│   └── run_evaluation.py
+└── tests/
+    └── test_evaluator.py
+```
+
+#### Step 2 — evaluation data models
+
+`evals/evaluator.py`:
+
+```python
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class EvaluationCase:
+    case_id: str
+    input: str
+    expected: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    case_id: str
+    expected: dict[str, Any]
+    predicted: dict[str, Any]
+    field_results: dict[str, bool]
+    exact_match: bool
+```
+
+#### Step 3 — field-level evaluation
+
+```python
+class TicketEvaluator:
+    def evaluate(
+        self,
+        case: EvaluationCase,
+        predicted: dict[str, Any],
+    ) -> EvaluationResult:
+        fields = ["category", "order_id", "needs_order_lookup"]
+        field_results = {
+            field: predicted.get(field) == case.expected.get(field)
+            for field in fields
+        }
+        exact_match = all(field_results.values())
+        return EvaluationResult(
+            case_id=case.case_id,
+            expected=case.expected,
+            predicted=predicted,
+            field_results=field_results,
+            exact_match=exact_match,
+        )
+```
+
+This evaluator is deterministic. It does not need another LLM to judge a category or extracted
+order ID.
+
+#### Step 4 — evaluation metrics
+
+`evals/metrics.py`:
+
+```python
+from collections import defaultdict
+
+
+def calculate_accuracy(results) -> float:
+    if not results:
+        return 0.0
+    correct = sum(result.exact_match for result in results)
+    return correct / len(results)
+
+
+def calculate_field_accuracy(results) -> dict[str, float]:
+    totals = defaultdict(int)
+    correct = defaultdict(int)
+    for result in results:
+        for field, is_correct in result.field_results.items():
+            totals[field] += 1
+            if is_correct:
+                correct[field] += 1
+    return {field: correct[field] / totals[field] for field in totals}
+
+
+def calculate_category_accuracy(results) -> float:
+    if not results:
+        return 0.0
+    correct = sum(
+        result.field_results.get("category", False) for result in results
+    )
+    return correct / len(results)
+```
+
+#### Step 5 — load the evaluation dataset
+
+`evals/run_evaluation.py`:
+
+```python
+import json
+from pathlib import Path
+
+from evals.evaluator import EvaluationCase, TicketEvaluator
+from evals.metrics import calculate_accuracy, calculate_field_accuracy
+
+DATASET_PATH = Path("evals/datasets/ticket_classification.jsonl")
+
+
+def load_dataset() -> list[EvaluationCase]:
+    cases = []
+    with DATASET_PATH.open(encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            data = json.loads(line)
+            cases.append(
+                EvaluationCase(
+                    case_id=data["id"],
+                    input=data["input"],
+                    expected=data["expected"],
+                )
+            )
+    return cases
+
+
+def predict(_ticket: str) -> dict:
+    return {
+        "category": "order_status",
+        "order_id": None,
+        "needs_order_lookup": False,
+    }
+
+
+def main() -> None:
+    evaluator = TicketEvaluator()
+    results = []
+    for case in load_dataset():
+        predicted = predict(case.input)
+        results.append(evaluator.evaluate(case, predicted))
+
+    print(f"Accuracy: {calculate_accuracy(results):.2%}")
+    for field, value in calculate_field_accuracy(results).items():
+        print(f"{field}: {value:.2%}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The `predict()` function is deliberately a placeholder. Replace it with the real classification
+service when integrating the evaluation framework.
+
+Run:
+
+```text
+uv run python -m evals.run_evaluation
+```
+
+#### Step 6 — unit tests
+
+`tests/test_evaluator.py`:
+
+```python
+from evals.evaluator import EvaluationCase, TicketEvaluator
+from evals.metrics import calculate_accuracy, calculate_field_accuracy
+
+
+def test_correct_classification():
+    case = EvaluationCase(
+        case_id="case-001",
+        input="My order #4821 has not arrived.",
+        expected={
+            "category": "order_status",
+            "order_id": "4821",
+            "needs_order_lookup": True,
+        },
+    )
+    predicted = {
+        "category": "order_status",
+        "order_id": "4821",
+        "needs_order_lookup": True,
+    }
+    result = TicketEvaluator().evaluate(case, predicted)
+    assert result.exact_match is True
+
+
+def test_incorrect_classification():
+    case = EvaluationCase(
+        case_id="case-002",
+        input="My order #4821 has not arrived.",
+        expected={
+            "category": "order_status",
+            "order_id": "4821",
+            "needs_order_lookup": True,
+        },
+    )
+    predicted = {
+        "category": "refund",
+        "order_id": "4821",
+        "needs_order_lookup": False,
+    }
+    result = TicketEvaluator().evaluate(case, predicted)
+    assert result.exact_match is False
+    assert result.field_results["category"] is False
+    assert result.field_results["needs_order_lookup"] is False
+
+
+def test_metrics():
+    case = EvaluationCase(
+        case_id="case-003",
+        input="The product arrived damaged.",
+        expected={
+            "category": "product_issue",
+            "order_id": None,
+            "needs_order_lookup": False,
+        },
+    )
+    evaluator = TicketEvaluator()
+    correct = evaluator.evaluate(case, case.expected)
+    incorrect = evaluator.evaluate(
+        case,
+        {"category": "refund", "order_id": None, "needs_order_lookup": False},
+    )
+    results = [correct, incorrect]
+    assert calculate_accuracy(results) == 0.5
+    field_accuracy = calculate_field_accuracy(results)
+    assert field_accuracy["order_id"] == 1.0
+```
+
+Run:
+
+```text
+uv run pytest -v
+uv run ruff check .
+```
+
+### 9. Compare models and prompts
+
+Compare different configurations against the same dataset.
+
+| Metric | Model A | Model B |
+| --- | --- | --- |
+| Classification accuracy | 94% | 96% |
+| Order ID extraction | 98% | 97% |
+| Lookup decision accuracy | 91% | 96% |
+| Average latency | 500 ms | 900 ms |
+| Cost per successful task | $0.008 | $0.015 |
+
+Illustrative comparison, not actual model benchmark results.
+
+Model B has higher overall classification and lookup accuracy, but costs more and is slower. The
+decision depends on quality requirements and service-level objectives. You can also route simple
+tickets to Model A, ambiguous tickets to Model B, and unresolved high-risk cases to human review,
+but evaluate the entire routing system, not only individual models.
+
+Experiment tracking:
+
+```json
+{
+  "experiment_id": "exp-001",
+  "model": "example-model",
+  "prompt_version": "ticket-classification-v3",
+  "dataset_version": "v1",
+  "accuracy": 0.96,
+  "average_latency_ms": 900,
+  "cost_per_success": 0.015
+}
+```
+
+### 10. Regression testing for prompts
+
+A prompt change is a code change from the perspective of application quality.
+
+```text
+Prompt v1 -> Accuracy 94%
+Prompt v2 -> Accuracy 96%
+Prompt v3 -> Accuracy 87%
+```
+
+Prompt v3 introduced a regression.
+
+Quality gates:
+
+| Metric | Minimum requirement |
+| --- | --- |
+| Overall accuracy | 95% |
+| Order ID extraction | 98% |
+| Lookup decision accuracy | 95% |
+| Structured output validity | 99% |
+
+These thresholds are illustrative. Establish actual thresholds based on business risk and
+baseline measurements.
+
+```python
+def validate_evaluation(
+    accuracy: float,
+    field_accuracy: dict[str, float],
+) -> None:
+    if accuracy < 0.95:
+        raise ValueError("Classification accuracy below threshold")
+    if field_accuracy.get("order_id", 0) < 0.98:
+        raise ValueError("Order ID extraction below threshold")
+```
+
+Execute this evaluation in CI before deployment. Do not use a tiny test dataset to justify a
+strong quality claim. Track sample sizes, dataset coverage, and statistical uncertainty.
+
+### 11. Evaluation architecture
+
+```mermaid
+flowchart TD
+    A[Golden dataset] --> B[Evaluation runner]
+    B --> C[Model or prompt]
+    C --> D[Generated outputs]
+    D --> E[Deterministic evaluator]
+    D --> F[LLM judge]
+    E --> G[Metrics aggregator]
+    F --> G
+    G --> H[Evaluation report]
+    H --> I{Quality gates passed?}
+    I -- Yes --> J[Allow deployment]
+    I -- No --> K[Reject change]
+```
+
+| Tool | Main use |
+| --- | --- |
+| DeepEval | LLM evaluation and testing |
+| Ragas | Retrieval-augmented generation evaluation |
+| promptfoo | Prompt and model comparisons |
+| LangSmith | Tracing and evaluation workflows |
+| MLflow | Experiment tracking and evaluation |
+
+Keep a custom Python evaluator first. Learn specialized frameworks after understanding the
+underlying evaluation principles.
+
+### 12. Production evaluation considerations
+
+| Area | Production requirement |
+| --- | --- |
+| Dataset management | Version evaluation datasets |
+| Reproducibility | Record model and prompt versions |
+| Evaluation quality | Use representative and reviewed examples |
+| Regression testing | Run evaluations before deployment |
+| Human feedback | Sample and review production outputs |
+| Cost management | Budget for judge and evaluation calls |
+| Security | Protect evaluation datasets and outputs |
+| Reporting | Compare metrics across experiments |
+
+Important evaluation principles:
+
+1. Never evaluate a model only on examples used to create its prompt.
+2. Keep a separate test dataset.
+3. Evaluate important fields independently.
+4. Use deterministic evaluation whenever possible.
+5. Do not assume an LLM judge is always correct.
+6. Track cost and latency alongside quality.
+7. Evaluate production behavior continuously.
+8. Maintain human review for important or high-risk decisions.
+
+### 13. Interview questions
+
+1. What is LLM evaluation?
+2. What is the difference between offline and online evaluation?
+3. What is a golden dataset?
+4. Why do we need separate development, validation, and test datasets?
+5. Explain accuracy, precision, recall, and F1.
+6. When would you use exact-match evaluation?
+7. What is semantic similarity?
+8. What is LLM-as-a-judge?
+9. What are the risks of using an LLM judge?
+10. How do you detect prompt regressions?
+11. How would you compare two LLM providers?
+12. How would you integrate evaluation into CI/CD?
+
+Architecture interview scenario: a team changes the LLM provider and upgrades the classification
+prompt. The new system is 20% cheaper, but customer support reports more incorrect
+classifications.
+
+A strong answer covers:
+
+- Build a representative evaluation dataset.
+- Compare old and new models.
+- Identify which categories regressed.
+- Measure cost per successful classification.
+- Establish quality gates.
+- Prevent deployment of a model that violates business requirements.
+
+### Current implementation status
+
+No `evals/` package, golden dataset, evaluation runner, or evaluator tests exist in the
+repository. There is no `ticket_classification.jsonl`, `evaluator.py`, `metrics.py`,
+`run_evaluation.py`, or `test_evaluator.py`. No evaluation framework dependencies (DeepEval,
+Ragas, promptfoo, LangSmith, MLflow) are declared in `pyproject.toml`.
+
+The current application does not have a ticket classification schema or structured output path to
+evaluate. `src/ai_agent/domain/models.py` defines `ModelRequest` and `ModelResponse` for text
+generation, not category/order-ID/lookup classification output. `CustomerSupportAssistant.answer`
+returns raw model text from the provider with a generic support-system prompt.
+
+There is no CI workflow in `.github/workflows/`. The observed pre-existing quality baseline from
+Day 80 documentation remains relevant: tests were run with `uv run pytest -v`, and lint was run
+with `uv run ruff check .`; this repo still has known lint/type-test issues outside the docs
+changes.
+
+The Day 84 cost tracking and Day 85 observability components described in earlier lessons are still
+documentation targets, not implemented code. Therefore evaluation cannot yet be integrated with
+real cost-per-success telemetry, trace-linked evaluation runs, or production quality dashboards.
+
+### Definition of done
+
+- [x] Explain why operational success does not guarantee AI quality.
+- [x] Distinguish offline and online evaluation.
+- [x] Design a golden dataset with normal, edge, ambiguous, adversarial, and missing-information cases.
+- [x] Explain accuracy, precision, recall, F1, and confusion matrices.
+- [x] Distinguish exact-match, semantic, rule-based, and LLM-as-a-judge evaluation.
+- [x] Explain regression testing and quality gates for prompt/model changes.
+- [x] Explain experiment tracking across model, prompt, dataset, quality, latency, and cost.
+- [ ] Create an `evals/` package with dataset, runner, evaluator, and metrics.
+- [ ] Implement deterministic field-level ticket classification evaluation.
+- [ ] Add evaluator unit tests and CI quality gates.
+- [ ] Connect evaluation to the real classification service.
+- [ ] Track experiment metadata and evaluation reports.
+- [ ] Add human review and online evaluation feedback loops.
+- [ ] Evaluate the full routing system, not only individual models.
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    A[Prompt or model change] --> B[Run golden dataset]
+    B --> C[Generate predictions]
+    C --> D[Field-level deterministic checks]
+    D --> E[Aggregate metrics]
+    E --> F{Quality gates pass?}
+    F -- Yes --> G[Candidate can deploy]
+    F -- No --> H[Reject and investigate regression]
+```
+
+```mermaid
+flowchart LR
+    A[Evaluation case] --> B[category]
+    A --> C[order_id]
+    A --> D[needs_order_lookup]
+    B --> E[Correct or incorrect]
+    C --> E
+    D --> E
+    E --> F[Exact match and field accuracy]
+```
+
+```mermaid
+flowchart TD
+    A[Offline evaluation] --> B[Golden dataset]
+    A --> C[Prompt/model comparison]
+    D[Online evaluation] --> E[Human review]
+    D --> F[Correction and escalation rates]
+    D --> G[Production schema and outcomes]
+    B --> H[Release confidence]
+    C --> H
+    E --> I[Continuous quality monitoring]
+    F --> I
+    G --> I
+    H --> J[Safer AI delivery]
+    I --> J
+```
+

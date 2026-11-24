@@ -4877,3 +4877,507 @@ sequenceDiagram
     App->>TB: Reconcile actual tokens
 ```
 
+## Day 22 — LLM Caching Strategies (Lesson Day 83)
+
+Day: Day 83 of 85
+Duration: 2 hours
+Difficulty: Medium
+Stage: Stage 5 — LLM Engineering | Track A — AI Engineer
+Topic: **LLM Caching Strategies**
+Project: **ticket-triage** (`ai-agent-py`)
+
+### 1. Learning objectives
+
+By the end of today, you should be able to:
+
+1. Understand why LLM applications need caching.
+2. Differentiate exact-match and semantic caching.
+3. Implement an in-memory cache.
+4. Implement Redis-based caching.
+5. Design cache keys for LLM requests.
+6. Understand TTL and cache invalidation.
+7. Implement semantic caching using embeddings.
+8. Prevent caching unsafe or sensitive responses.
+9. Integrate caching into an LLM Gateway.
+10. Design a production-ready caching architecture.
+
+### 2. Problem we are solving
+
+The ticket-triage application receives the same request three times:
+
+```text
+"My order has not arrived."
+"My order has not arrived."
+"My order has not arrived."
+```
+
+Without caching, all three requests go to OpenAI, consuming API calls, input tokens, output
+tokens, and processing time. With caching, the first response is stored and reused for identical
+later requests: three API calls and three token charges become one of each.
+
+```text
+Without caching: 3 LLM API calls, 3x token consumption
+With caching:    1 LLM API call,  1x token consumption
+```
+
+This is an illustrative example that assumes all three requests can safely reuse the same cached
+response.
+
+### 3. Understand LLM caching strategies
+
+| Strategy | How it works | Advantages | Trade-offs |
+| --- | --- | --- | --- |
+| Exact-match caching | Hash the request and generation settings into a cache key | Fast, simple, deterministic, no embedding model | Small wording changes miss; limited semantic reuse |
+| Semantic caching | Compare embeddings and reuse responses above a similarity threshold | Reuses responses across different wording; useful for FAQs | Embedding cost, threshold tuning, context mismatch risk |
+| Provider-side prompt caching | Provider caches repeated prompt prefixes | May reduce prefix processing cost and latency | Does not necessarily remove API calls or generation |
+| Multi-level caching | Combine local, shared, semantic, and provider caches | Balances speed, sharing, and reuse | More infrastructure and consistency complexity |
+
+Exact-match example:
+
+```text
+Input: "My order has not arrived."
+Key: SHA256(prompt + model + configuration)
+Value: {"category": "order_status", "priority": "medium"}
+```
+
+Semantic caching treats "My order has not arrived.", "Where is my package?", and "I haven't
+received my delivery." as potentially similar requests by comparing embeddings. Provider-side
+prompt caching is different from response caching: a shared system prompt prefix may be eligible
+for reuse, but output generation still happens.
+
+Typical production layers:
+
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| L1 | Python memory | Very fast local cache |
+| L2 | Redis | Shared application cache |
+| L3 | Vector database | Semantic cache |
+| L4 | Provider prompt cache | Reuse prompt prefixes |
+
+### 4. Important caching concepts
+
+| Concept | Meaning |
+| --- | --- |
+| Cache hit | A matching cached response exists |
+| Cache miss | No matching response exists |
+| TTL | Time To Live; how long an entry remains valid |
+| Expiration | Entry has passed its TTL |
+| Eviction | Entry removed to free resources |
+| Invalidation | Explicit removal when underlying data changes |
+
+A cache entry created at 10:00 with a 300-second TTL expires at 10:05. After expiration, the
+application must regenerate the response or retrieve fresh data.
+
+**Cache invalidation:** a cached answer to "Where is my order #4821?" can become wrong when the
+order status changes. Do not cache dynamic business decisions without an explicit freshness and
+invalidation strategy.
+
+**Cache key design:** the key must include every factor that affects the generated response:
+
+```text
+tenant_id
++ model
++ prompt_version
++ system_prompt
++ user_prompt
++ generation_parameters
++ response_schema_version
+```
+
+Different system prompts, models, tenants, or response schemas must not accidentally share cached
+results.
+
+### 5. Hands-on lab — build an LLM response cache
+
+**Project structure:**
+
+```text
+ticket-triage/
+├── app/
+│   └── llm/
+│       ├── base.py
+│       ├── openai_provider.py
+│       ├── ollama_provider.py
+│       ├── fallback_manager.py
+│       ├── retry_manager.py
+│       ├── circuit_breaker.py
+│       ├── rate_limiter.py
+│       ├── cache.py
+│       └── cache_keys.py
+├── tests/
+│   └── test_cache.py
+└── pyproject.toml
+```
+
+No new dependency is needed for the in-memory cache. For Redis:
+
+```text
+uv add redis
+```
+
+**Configuration:**
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class CacheConfig:
+    ttl_seconds: int = 300
+    max_entries: int = 1000
+```
+
+**Cache key generation:**
+
+```python
+import hashlib
+import json
+
+def generate_cache_key(
+    prompt: str,
+    model: str,
+    system_prompt: str,
+    temperature: float,
+    prompt_version: str,
+) -> str:
+    payload = {
+        "prompt": prompt,
+        "model": model,
+        "system_prompt": system_prompt,
+        "temperature": temperature,
+        "prompt_version": prompt_version,
+    }
+    serialized = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(serialized.encode()).hexdigest()
+```
+
+In production, also include tenant identity, response format, tool definitions, and other context
+that affects output.
+
+**In-memory cache:**
+
+```python
+import time
+from dataclasses import dataclass
+from typing import Any
+
+@dataclass
+class CacheEntry:
+    value: Any
+    expires_at: float
+
+class InMemoryCache:
+    def __init__(self, config: CacheConfig):
+        self.config = config
+        self.entries = {}
+
+    def get(self, key: str):
+        entry = self.entries.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() >= entry.expires_at:
+            del self.entries[key]
+            return None
+        return entry.value
+
+    def set(self, key: str, value) -> None:
+        self.entries[key] = CacheEntry(
+            value=value,
+            expires_at=time.monotonic() + self.config.ttl_seconds,
+        )
+```
+
+This is a learning implementation. Production needs bounded LRU or eviction, thread-safe access,
+serialization rules, and metrics.
+
+**Cached provider wrapper:**
+
+```python
+class CachedLLMProvider:
+    def __init__(self, provider, cache):
+        self.provider = provider
+        self.cache = cache
+
+    def generate(self, prompt: str):
+        cached_response = self.cache.get(prompt)
+        if cached_response is not None:
+            return cached_response
+        response = self.provider.generate(prompt)
+        self.cache.set(prompt, response)
+        return response
+```
+
+This first exercise uses the prompt itself as the key; replace it with the structured key from
+`cache_keys.py` in real use.
+
+**Tests:**
+
+```python
+def test_cache_stores_and_returns_value():
+    cache = InMemoryCache(CacheConfig(ttl_seconds=300))
+    cache.set("ticket-001", "order_status")
+    assert cache.get("ticket-001") == "order_status"
+
+class MockProvider:
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, prompt):
+        self.calls += 1
+        return "order_status"
+
+def test_cached_provider_avoids_duplicate_calls():
+    provider = MockProvider()
+    cache = InMemoryCache(CacheConfig(ttl_seconds=300))
+    cached_provider = CachedLLMProvider(provider=provider, cache=cache)
+    result1 = cached_provider.generate("My order has not arrived.")
+    result2 = cached_provider.generate("My order has not arrived.")
+    assert result1 == result2 == "order_status"
+    assert provider.calls == 1
+
+def test_cache_entry_expires(monkeypatch):
+    import app.llm.cache as module
+
+    current_time = 100.0
+    monkeypatch.setattr(module.time, "monotonic", lambda: current_time)
+
+    cache = module.InMemoryCache(module.CacheConfig(ttl_seconds=10))
+    cache.set("ticket-001", "order_status")
+    assert cache.get("ticket-001") == "order_status"
+
+    current_time = 111.0
+    assert cache.get("ticket-001") is None
+```
+
+**Run the checks:**
+
+```text
+uv run pytest tests/test_cache.py -v
+uv run ruff check .
+```
+
+### 6. Redis-based distributed caching
+
+In-memory caching works for a single process. With three FastAPI instances, each has its own
+cache, so identical requests can still trigger three LLM calls. Redis provides a shared cache.
+
+```python
+import json
+from redis import Redis
+
+class RedisCache:
+    def __init__(self, redis_url: str, ttl_seconds: int = 300):
+        self.client = Redis.from_url(redis_url, decode_responses=True)
+        self.ttl_seconds = ttl_seconds
+
+    def get(self, key: str):
+        value = self.client.get(key)
+        if value is None:
+            return None
+        return json.loads(value)
+
+    def set(self, key: str, value) -> None:
+        self.client.set(key, json.dumps(value), ex=self.ttl_seconds)
+```
+
+```text
+REDIS_URL=redis://localhost:6379/0
+LLM_CACHE_TTL=300
+```
+
+For production, configure authentication, TLS where appropriate, access control, eviction
+policies, and availability monitoring.
+
+### 7. Semantic caching architecture
+
+Exact-match caching treats these as three separate requests:
+
+```text
+My order has not arrived.
+Where is my package?
+I haven't received my delivery.
+```
+
+A semantic cache embeds each request, searches similar cached requests, and reuses a response when
+similarity exceeds a threshold. Otherwise it calls the LLM and stores the embedding plus response.
+
+Cosine similarity is a common comparison:
+
+`similarity(A, B) = (A · B) / (||A|| ||B||)`
+
+| Request | Illustrative similarity |
+| --- | --- |
+| My order has not arrived | 1.00 |
+| Where is my package? | 0.91 |
+| I haven't received my delivery | 0.94 |
+| How do I reset my password? | 0.12 |
+
+These numbers are illustrative, not measured results. With a 0.90 threshold, the first three may
+qualify. However, semantic similarity does not establish equivalent business meaning: "Where is
+my order?" and "Where is order #4821?" are similar but the second includes a specific identifier.
+A safe semantic cache preserves relevant entities, tenant boundaries, authorization context, and
+dynamic business data. Prefer semantic caching for stable, reusable knowledge responses, and be
+very cautious with customer-specific operations and decisions.
+
+### 8. Cache invalidation strategies
+
+A cached order status from 10:00 can be wrong by 10:10 if the order changed at 10:05.
+
+| Strategy | Description |
+| --- | --- |
+| TTL | Automatically expire after a period |
+| Event-based | Invalidate when underlying data changes |
+| Version-based | Change the cache key when the data version changes |
+| Manual | Explicitly delete cached entries |
+| No-cache | Never cache dynamic or sensitive operations |
+
+For ticket-triage, classification of an unchanged ticket can be a caching candidate. Order
+lookups and refund eligibility should generally use fresh authoritative business data.
+
+### 9. Production LLM Gateway architecture
+
+The caching layer sits before expensive LLM execution. A gateway can check L1 memory, then L2
+Redis, then the semantic cache before applying rate limiting, retry, circuit breaking, provider
+execution, output validation, and response caching.
+
+Cache hits bypass provider calls and therefore bypass provider rate limiting. They must still be
+subject to application user-level access controls and API rate limits.
+
+### 10. Production considerations
+
+| Risk | Mitigation |
+| --- | --- |
+| Stale response | TTL and invalidation |
+| Cross-tenant data leakage | Tenant-scoped cache keys |
+| Sensitive data exposure | Data classification and encryption |
+| Incorrect semantic match | Similarity threshold and validation |
+| Cache stampede | Single-flight or distributed locking |
+| Cache poisoning | Validate before storing |
+| Memory exhaustion | Bounded cache and eviction |
+| Different model outputs | Include model and prompt version |
+| Concurrent cache misses | Request coalescing |
+| Unavailable Redis | Controlled cache bypass |
+
+**Cache stampede:** when 1,000 users request the same resource simultaneously just as its cache
+entry expires, all 1,000 misses can call the LLM. Common defenses are single-flight request
+coalescing, distributed locks, stale-while-revalidate, TTL jitter, and background refresh.
+
+### 11. Testing requirements
+
+| Test | Expected result |
+| --- | --- |
+| Cache hit | Return cached response |
+| Cache miss | Call provider |
+| Cache expiration | Regenerate response |
+| Different model | Different cache key |
+| Different prompt version | Different cache key |
+| Different tenant | Isolated cache entry |
+| Redis unavailable | Controlled cache bypass |
+| Invalid response | Do not cache |
+| Concurrent identical requests | Avoid duplicate generation where configured |
+| Dynamic business data | Fresh authoritative lookup |
+
+Run:
+
+```text
+uv run pytest -v
+uv run ruff check .
+```
+
+### 12. Today's assignments
+
+Day 83 checklist:
+
+- [ ] Understand exact-match caching.
+- [ ] Understand semantic caching.
+- [ ] Understand provider-side prompt caching.
+- [ ] Implement cache key generation.
+- [ ] Implement an in-memory cache.
+- [ ] Implement TTL expiration.
+- [ ] Implement a cached LLM provider wrapper.
+- [ ] Write cache hit and miss tests.
+- [ ] Understand Redis distributed caching.
+- [ ] Study semantic similarity and cache invalidation.
+- [ ] Understand cache stampede prevention.
+- [ ] Document production cache architecture.
+
+After completing the lab:
+
+```text
+git add .
+git commit -m "feat(llm): implement response caching strategies"
+```
+
+### Current implementation status
+
+No cache module, cache configuration, Redis dependency, embedding integration, or cache tests
+exist in the repository. No files match `*cache*`, and `src/ai_agent/config.py` contains only
+OpenAI settings. The retry and rate-limiting targets from Days 80 and 82 remain unimplemented as
+application-level gateway layers, so there is no existing gateway into which caching can be
+integrated.
+
+`src/ai_agent/application/retry.py` still handles `LLMRateLimitError` reactively using
+`retry_after`; it does not proactively throttle or cache requests. `src/ai_agent/providers/`
+contains no response normalization to a cacheable application-level result beyond existing
+provider adapters, and no cache-safety classification distinguishes stable reusable responses
+from dynamic business decisions.
+
+### Definition of done
+
+- [x] Explain why repeated identical LLM requests waste latency and tokens.
+- [x] Differentiate exact-match, semantic, provider prompt, and multi-level caching.
+- [x] Explain TTL, cache hits, misses, expiration, and eviction.
+- [x] Design a cache key that includes model, prompt version, and tenant context.
+- [x] Explain why stale dynamic business data must not be cached blindly.
+- [x] Describe Redis shared caching and cache stampede defenses.
+- [ ] Implement and test an in-memory cache with TTL.
+- [ ] Implement a cached provider wrapper using structured cache keys.
+- [ ] Implement Redis-based caching with controlled bypass.
+- [ ] Add semantic caching with evaluated similarity thresholds.
+- [ ] Integrate caching into the LLM Gateway with access control preserved.
+- [ ] Add cache hit, miss, expiration, tenant isolation, and stampede tests.
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    A[Incoming prompt] --> K[Build structured cache key]
+    K --> C{Cache hit?}
+    C -- Yes --> R[Return cached response]
+    C -- No --> P[Call LLM provider]
+    P --> V[Validate response]
+    V -- Cacheable --> S[Store response]
+    V -- Unsafe or dynamic --> X[Return without caching]
+    S --> R
+```
+
+```mermaid
+flowchart TD
+    A[Incoming request] --> E[Generate embedding]
+    E --> V[Vector search]
+    V --> Q{Similarity above threshold?}
+    Q -- Yes --> C[Return cached response]
+    Q -- No --> P[Call LLM provider]
+    P --> G[Generate response]
+    G --> S[Store embedding and response]
+    S --> C
+```
+
+```mermaid
+flowchart TD
+    A[Classification service] --> G[LLM Gateway]
+    G --> L1[L1 in-memory cache]
+    L1 -- Miss --> L2[L2 Redis cache]
+    L2 -- Miss --> SC[Semantic cache]
+    SC -- Miss --> RL[Rate limiter]
+    RL --> CB[Circuit breaker]
+    CB --> RM[Retry manager]
+    RM --> P[Primary provider]
+    P -- Eligible failure --> F[Fallback provider]
+    P -- Success --> O[Output validation]
+    F -- Success --> O
+    O --> R[Return result]
+    L1 -- Hit --> R
+    L2 -- Hit --> R
+    SC -- Hit --> R
+```
+

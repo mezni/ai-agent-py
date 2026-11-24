@@ -2934,3 +2934,355 @@ flowchart TD
     T --> O
 ```
 
+
+## Day 17 — Error Handling and Retries (Lesson Day 78)
+
+Day: Day 78 of 85
+Duration: 2 hours
+Difficulty: Intermediate
+Stage: Stage 5 — LLM Engineering | Track A — AI Engineer
+Topic: **Resilient LLM API integration**
+Project: **ai-agent-py**
+Project objective: make `ai-agent-py` resilient when OpenAI or Ollama becomes temporarily
+unavailable.
+
+### 1. Learning objectives
+Today, you will learn to:
+- Identify common LLM API failures.
+- Classify errors as transient or permanent.
+- Implement retry policies.
+- Use exponential backoff and jitter.
+- Handle timeouts and rate limits.
+- Avoid retrying unsafe operations.
+- Test failure scenarios without calling an LLM.
+
+### 2. Problem — unreliable LLM APIs
+Imagine the ticket-triage application receives:
+
+> My order #4821 has not arrived.
+
+The application calls the LLM, but the provider returns an error.
+
+| Error | Example | Retry? |
+| --- | --- | --- |
+| Connection error | Network unavailable | Yes |
+| Timeout | Model takes too long | Usually |
+| Rate limit | HTTP 429 | Yes, respecting retry guidance |
+| Server error | HTTP 500 | Usually |
+| Service unavailable | HTTP 503 | Usually |
+| Authentication error | HTTP 401 | No |
+| Invalid request | HTTP 400 | No |
+| Invalid API key | Incorrect credentials | No |
+| Context length exceeded | Prompt too large | No, fix the request |
+| Invalid model response | Malformed JSON | Different recovery strategy |
+
+The important distinction:
+- **Transient error:** may disappear if you try again.
+- **Permanent error:** repeating the same request will not solve the problem.
+
+Blindly retrying every error wastes money and increases latency.
+
+### 3. Retry strategies
+A retry policy defines how the application responds when an operation fails.
+
+| Strategy | Flow | Trade-off |
+| --- | --- | --- |
+| Immediate retry | Request → failure → retry immediately → success | Simple, but can worsen provider overload |
+| Fixed delay | Request → failure → wait 2 seconds → retry | Predictable, but many clients still retry together |
+| Exponential backoff | Each retry waits longer than the previous one | Reduces pressure, but can still synchronize clients |
+| Exponential backoff with jitter | Randomized delay around the backoff bound | Recommended; spreads retries over time |
+
+Illustrative retry delays without jitter: `0 sec`, `4 sec`, `8 sec`, `12 sec`, `16 sec` for
+retries 1–5.
+
+Exponential backoff formula:
+
+`delay = min(max_delay, base_delay × 2^(attempt - 1))`
+
+Full-jitter formula:
+
+`delay = U(0, min(cap, base × 2^(attempt - 1)))`
+
+- `U` means a random value between zero and the upper bound.
+- `base` is the initial delay.
+- `cap` is the maximum delay.
+
+If 1,000 applications receive a rate-limit error at the same time and all retry after exactly
+four seconds, they create another traffic spike. Jitter distributes attempts over time. The
+recommended approach is exponential backoff with jitter, subject to a maximum attempt count and
+an overall deadline.
+
+### 4. Error-handling architecture
+Provider-specific exceptions must not be mixed with application-level error handling. The
+provider adapter translates SDK exceptions into application exceptions; the retry policy depends
+on those application exceptions, not on OpenAI or Ollama details.
+
+| Component | Responsibility |
+| --- | --- |
+| Provider adapter | Translate provider errors |
+| Error classifier | Determine retryability |
+| Retry policy | Calculate retry delays |
+| Retry executor | Execute attempts |
+| Orchestrator | Coordinate the application workflow |
+| Observability | Record errors and retry metrics |
+
+The orchestrator coordinates the workflow; it should not inspect OpenAI-specific exception
+classes or duplicate retry logic across business functions.
+
+### 5. Application-level error types
+Target hierarchy:
+
+- `LLMError` — base exception for LLM application errors.
+- `LLMTransientError` — may succeed on a later attempt.
+  - `LLMRateLimitError` — carries optional `retry_after`.
+  - `LLMTimeoutError` — the model request timed out.
+  - `LLMConnectionError` — the provider could not be reached.
+- `LLMPermanentError` — retrying the same request will not resolve the error.
+  - `LLMAuthenticationError` — authentication failed.
+
+The provider adapter should translate SDK-specific exceptions into these types. The orchestrator
+should not depend on provider SDK exception classes.
+
+### 6. Exponential backoff with jitter
+The target retry helper should support:
+
+- `attempt` numbered from 1 so `base × 2^(attempt - 1)` starts at `base`.
+- `max_attempts` as total attempts, not retries after the first attempt; `max_attempts=3` means
+  at most three total calls.
+- `base_delay`, `max_delay`, and full-jitter calculation via `random.uniform(0, upper_bound)`.
+- An injectable `sleep` function so tests can capture delays without waiting.
+- `retry_after` honoring provider guidance when available, bounded by a maximum wait and the
+  overall request deadline.
+
+For production, enforce a maximum `Retry-After` wait and a total deadline. Do not let an
+untrusted or excessive retry interval block a worker indefinitely.
+
+### 7. Retry tests
+`uv run pytest tests/application/test_retry.py -v`
+
+Tests should cover:
+
+- Success without retry.
+- Retry then success.
+- Exhausted retries.
+- Permanent error stops immediately.
+- Captured backoff delays.
+- Jitter bounds.
+- `retry_after` handling.
+- Timeout and rate-limit classification.
+- No network calls or real API keys.
+
+### 8. Retrying in the model client
+The retry mechanism should wrap the model operation, not be duplicated in every business
+workflow. A resilient client decorator can call `execute_with_retry()` around the underlying
+`generate()` method, leaving the orchestrator unchanged.
+
+For streaming, retries need explicit rules: once response chunks have been sent to the caller,
+restarting the entire generation may duplicate content. Decide whether retries are allowed before
+the first chunk only, and always record partial output.
+
+### 9. Timeouts — do not wait forever
+Example configuration:
+
+```text
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_ATTEMPTS=3
+LLM_BASE_RETRY_DELAY=1
+LLM_MAX_RETRY_DELAY=10
+```
+
+Illustrative provider call:
+
+```python
+response = client.responses.create(
+    model="your-model",
+    input=prompt,
+    timeout=30,
+)
+```
+
+Adapt the timeout parameter to the SDK and API method actually used.
+
+| Setting | Purpose |
+| --- | --- |
+| Connection timeout | Maximum time to establish a connection |
+| Read timeout | Maximum time waiting for response data |
+| Total deadline | Maximum time for the whole operation |
+| Retry budget | Maximum time spent retrying |
+
+A retry policy must fit inside the overall request deadline. Three attempts of 30 seconds each
+can create a 90-second wait before backoff delays.
+
+### 10. Production considerations
+**Avoid retry storms:** use exponential backoff, jitter, maximum attempts, overall deadlines,
+and provider rate-limit guidance.
+
+**Avoid permanent-error retries:** do not retry invalid credentials, invalid model names, invalid
+request parameters, unsupported operations, or context-length failures without changing the
+request.
+
+**Avoid duplicate consequential actions:** if a refund request times out after the provider
+accepted it, a blind retry may issue the refund twice. Use idempotency keys where supported,
+record operation state, check whether the action already completed, require human approval, and
+never assume a timeout means the remote operation did not happen.
+
+**Respect provider rate limits:** follow `Retry-After` within the application's maximum wait
+budget and never retry faster than the provider allows.
+
+### 11. Lab — simulate provider failures
+Goal: demonstrate recovery from transient errors and immediate stopping on permanent errors.
+
+Create a fake provider that:
+1. Fails with a timeout on the first attempt.
+2. Fails with a rate limit on the second attempt.
+3. Returns a valid ticket classification on the third attempt.
+
+Expected execution:
+
+`Attempt 1 → Timeout`, `Attempt 2 → Rate limit`, `Attempt 3 → Success`
+
+Expected result:
+
+```json
+{
+  "category": "order_status",
+  "order_id": "4821",
+  "needs_order_lookup": true
+}
+```
+
+Permanent failure scenario:
+
+`Attempt 1 → Authentication error`, `Result → Stop immediately`
+
+**Lab checklist:**
+- [ ] Create application-level error types.
+- [ ] Implement exponential backoff.
+- [ ] Add jitter.
+- [ ] Implement maximum attempts.
+- [ ] Support `Retry-After`.
+- [ ] Test transient failures.
+- [ ] Test permanent failures.
+- [ ] Configure provider timeouts.
+- [ ] Verify no duplicate consequential actions.
+- [ ] Record retry attempts and failures.
+
+### 12. Git commits
+Commit only the changes actually made:
+
+```text
+git add .
+git commit -m "feat: add LLM error classification and retry policies"
+
+git add .
+git commit -m "test: cover transient and permanent LLM failures"
+
+git add .
+git commit -m "docs: document LLM resilience and retry strategy"
+```
+
+### 13. LOG.md entry
+Use `Day 78 — Error Handling and Retries` with:
+
+- **Component/Step:** LLM Error Handling and Retry Policy.
+- **Goal:** make LLM provider calls resilient to temporary failures while preventing unnecessary
+  retries and duplicate operations.
+- **Problem/Friction:** providers can fail with network errors, timeouts, rate limits, server
+  errors, and invalid requests; without consistent handling, failures interrupt ticket processing.
+- **Solution & Trade-offs:** add application-level exceptions, transient/permanent classification,
+  exponential backoff with jitter, maximum attempts, provider timeout configuration, and retry
+  handling. Retries improve resilience but add latency and cost; backoff delays recovery;
+  side-effecting operations need idempotency and state tracking.
+- **Active Work:** LLM engineering — resilience and reliability.
+- **Code State:** error types and retry policy implemented or under development; unit tests cover
+  transient and permanent failures.
+- **Next Steps:** implement LLM provider fallback strategies.
+
+### Current implementation status
+`src/ai_agent/application/retry.py` implements `is_retryable()` and `execute_with_retry()`. It
+retries OpenAI `APIConnectionError`, `APITimeoutError`, `RateLimitError`, and `APIStatusError`
+with status code 500 or higher. It uses fixed exponential delays `base_delay * 2**attempt` with
+`time.sleep()` and defaults `max_attempts=3`, `base_delay=1.0`.
+
+`src/ai_agent/application/errors.py` defines controlled application errors, but the hierarchy is
+`LLMApplicationError` with `LLMRefusalError`, `LLMIncompleteResponseError`, `LLMParsingError`,
+`LLMValidationError`, `LLMRetryExhaustedError`, and `LLMNonRetryableError`; it does not yet define
+the target transient-specific types such as `LLMRateLimitError`, `LLMTimeoutError`, and
+`LLMConnectionError`.
+
+`tests/application/test_retry.py` covers success without retry, retry then success, exhausted
+retries, and non-retryable errors with mocked sleep. `src/ai_agent/application/ticket_classifier.py`
+disables the SDK's own retries with `max_retries=0` and wraps the model call in
+`execute_with_retry()`, so classification has one explicit retry layer. In contrast,
+`src/ai_agent/providers/openai_provider.py` sets `max_retries=2` and converts provider exceptions
+to `RuntimeError`, which bypasses the shared retry classifier. `OllamaProvider` has no error
+normalization or retry handling.
+
+The implementation does not yet add jitter, inject `sleep`, enforce a maximum delay or total
+retry budget, honor `Retry-After`, provide malformed-response repair, guard unsafe operations,
+record retry metrics, or apply retry handling consistently across providers. The full suite
+remains blocked by the undefined `Iterator` in `OpenAIProvider.stream()`, and Ruff still reports
+pre-existing code errors.
+
+### Definition of done
+- [x] I understand transient and permanent errors.
+- [x] I understand exponential backoff.
+- [x] I understand jitter.
+- [x] I can implement a retry policy.
+- [x] I can configure timeouts.
+- [ ] I can handle rate limits completely.
+- [x] I understand idempotency risks.
+- [x] I can test provider failures without real API calls.
+- [ ] Add jitter.
+- [ ] Honor `Retry-After`.
+- [ ] Enforce maximum attempts, maximum delay, and an overall deadline.
+- [ ] Add application-level transient error types.
+- [ ] Apply retry handling consistently across providers.
+- [ ] Verify no duplicate consequential actions.
+- [ ] Record retry attempts and failures.
+- [ ] Tests and Ruff pass.
+- [ ] Git commits and `LOG.md` are updated.
+
+### Diagrams
+
+```mermaid
+flowchart TD
+    E[Provider call] --> R{is_retryable?}
+    R -- Yes --> A{Attempts left?}
+    A -- Yes --> W[Exponential backoff and jitter]
+    W --> E
+    A -- No --> X[LLMRetryExhaustedError]
+    R -- No --> N[LLMNonRetryableError]
+```
+
+```mermaid
+flowchart TD
+    A[Application orchestrator] --> C[Model client]
+    C --> P[Provider adapter]
+    P --> L[LLM API]
+    L -- Success --> S[Return response]
+    L -- Transient error --> E[Error classifier]
+    E --> Q{Retry allowed?}
+    Q -- Yes --> B[Backoff and jitter]
+    B --> C
+    Q -- No --> F[Raise application error]
+    F --> H[Log and safe failure]
+```
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant Retry as Retry policy
+    participant Provider as Provider adapter
+    participant LLM as LLM API
+    App->>Retry: Execute call
+    Retry->>Provider: Generate
+    Provider->>LLM: Request
+    LLM-->>Provider: Transient failure
+    Provider-->>Retry: Classified error
+    Retry->>Retry: Backoff and jitter
+    Retry->>Provider: Generate again
+    Provider->>LLM: Request
+    LLM-->>App: Response
+```
+

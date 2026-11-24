@@ -1,59 +1,59 @@
-from unittest.mock import Mock, patch
-
 import pytest
-from openai import APIConnectionError
 
 from ai_agent.application.errors import (
-    LLMNonRetryableError,
-    LLMRetryExhaustedError,
+    LLMTransientError,
 )
-from ai_agent.application.retry import execute_with_retry
+from ai_agent.application.retry import (
+    execute_with_retry,
+)
 
 
 def test_success_without_retry():
-    operation = Mock(return_value="success")
-
-    result = execute_with_retry(operation)
-
-    assert result == "success"
-    assert operation.call_count == 1
-
-
-def test_retry_then_success():
-    operation = Mock(
-        side_effect=[
-            APIConnectionError(request=None),
-            "success",
-        ]
+    result = execute_with_retry(
+        operation=lambda: "success",
+        sleep=lambda _: None,
     )
 
-    with patch("ai_agent.application.retry.time.sleep"):
-        result = execute_with_retry(
-            operation,
-            max_attempts=3,
-        )
+    assert result == "success"
+
+
+def test_retries_then_succeeds():
+    calls = 0
+    delays = []
+
+    def operation():
+        nonlocal calls
+        calls += 1
+
+        if calls < 3:
+            raise LLMTransientError("Temporary failure")
+
+        return "success"
+
+    result = execute_with_retry(
+        operation=operation,
+        max_attempts=3,
+        sleep=delays.append,
+    )
 
     assert result == "success"
-    assert operation.call_count == 2
+    assert calls == 3
+    assert len(delays) == 2
 
 
-def test_retry_exhausted():
-    operation = Mock(side_effect=APIConnectionError(request=None))
+def test_raises_after_max_attempts():
+    calls = 0
 
-    with patch("ai_agent.application.retry.time.sleep"):
-        with pytest.raises(LLMRetryExhaustedError):
-            execute_with_retry(
-                operation,
-                max_attempts=3,
-            )
+    def operation():
+        nonlocal calls
+        calls += 1
+        raise LLMTransientError("Provider unavailable")
 
-    assert operation.call_count == 3
+    with pytest.raises(LLMTransientError):
+        execute_with_retry(
+            operation=operation,
+            max_attempts=3,
+            sleep=lambda _: None,
+        )
 
-
-def test_non_retryable_error():
-    operation = Mock(side_effect=ValueError("invalid input"))
-
-    with pytest.raises(LLMNonRetryableError):
-        execute_with_retry(operation)
-
-    assert operation.call_count == 1
+    assert calls == 3

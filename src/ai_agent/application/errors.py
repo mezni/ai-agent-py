@@ -1,26 +1,42 @@
-class LLMApplicationError(Exception):
-    """Base error for LLM application failures."""
+class LLMError(Exception):
+    """Base exception for LLM application errors."""
 
 
-class LLMRefusalError(LLMApplicationError):
-    """The model refused to fulfill the request."""
+class LLMTransientError(LLMError):
+    """An error that may succeed on a later attempt."""
 
 
-class LLMIncompleteResponseError(LLMApplicationError):
-    """The model response was incomplete."""
+class LLMRateLimitError(LLMTransientError):
+    """Provider rate limit was reached."""
+
+    def __init__(
+        self,
+        message: str,
+        retry_after: float | None = None,
+    ):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
-class LLMParsingError(LLMApplicationError):
-    """The response could not be parsed."""
+class LLMTimeoutError(LLMTransientError):
+    """The model request timed out."""
 
 
-class LLMValidationError(LLMApplicationError):
-    """The response failed validation."""
+class LLMConnectionError(LLMTransientError):
+    """The provider could not be reached."""
 
 
-class LLMRetryExhaustedError(LLMApplicationError):
-    """Retry attempts were exhausted."""
+class LLMPermanentError(LLMError):
+    """Retrying the same request will not resolve the error."""
 
 
-class LLMNonRetryableError(LLMApplicationError):
-    """The failure should not be retried."""
+class LLMAuthenticationError(LLMPermanentError):
+    """Authentication failed."""
+
+
+class LLMInvalidRequestError(LLMPermanentError):
+    """The request was invalid."""
+
+
+class LLMResponseError(LLMError):
+    """The response could not be interpreted."""

@@ -8443,3 +8443,694 @@ flowchart TD
     K --> L[Ticket system]
 ```
 
+## Day 27 — LLM Security Engineering (Lesson Day 88)
+
+Day: Day 88
+Duration: 2 hours
+Difficulty: Advanced
+Stage: Stage 5 — LLM Engineering | Track A — AI Engineer
+Topic: **LLM Security Engineering**
+Project: **ticket-triage** (`ai-agent-py`)
+
+### 1. Learning objectives
+
+Today's focus: secure production LLM applications against unauthorized access, credential theft,
+data leakage, malicious tool execution, and infrastructure attacks.
+
+By the end of this lesson, you should be able to:
+
+1. Secure API keys and application secrets.
+2. Implement authentication and authorization.
+3. Apply Role-Based Access Control (RBAC).
+4. Protect sensitive data and customer information.
+5. Prevent unauthorized LLM tool execution.
+6. Secure multi-tenant LLM applications.
+7. Implement rate limiting and abuse prevention.
+8. Design defense-in-depth security architecture.
+
+### 2. What problem are we solving?
+
+Ticket-triage is deployed as an AI support agent that receives customer tickets, calls an external
+LLM provider, retrieves order information, recommends refunds, and stores classification results.
+
+Security questions include:
+
+- What if someone steals the OpenAI API key?
+- What if an unauthorized user accesses another customer's ticket?
+- What if a customer tricks the agent into retrieving another customer's order?
+- What if the LLM executes an unauthorized refund?
+- What if an attacker sends thousands of requests?
+- What if sensitive customer information appears in logs?
+
+These are application security problems, not simply prompt engineering problems.
+
+Objective: build an LLM application where security is enforced independently of model behavior.
+
+### 3. LLM security fundamentals
+
+| Security domain | Responsibility |
+| --- | --- |
+| Secrets management | Protect API keys and credentials |
+| Authentication | Verify user identity |
+| Authorization | Control user permissions |
+| Data security | Protect sensitive information |
+| Tool security | Restrict agent capabilities |
+| Tenant isolation | Separate customer data |
+| Infrastructure security | Protect application services |
+| Monitoring | Detect suspicious activity |
+
+### 4. Secrets management
+
+Problem: developers sometimes hardcode API keys.
+
+Bad practice:
+
+```python
+OPENAI_API_KEY = "sk-your-secret-key"
+```
+
+This exposes credentials through Git repositories, application logs, screenshots, and shared
+configuration files. Use environment variables and a secrets manager.
+
+Install:
+
+```text
+uv add python-dotenv
+```
+
+Create `.env`:
+
+```text
+OPENAI_API_KEY=your-secret-key
+DATABASE_URL=postgresql://user:password@localhost/ticketdb
+```
+
+Add `.env` to `.gitignore`:
+
+```text
+.env
+.env.*
+!.env.example
+```
+
+Create `.env.example`:
+
+```text
+OPENAI_API_KEY=
+DATABASE_URL=
+```
+
+Load secrets in `src/config.py`:
+
+```python
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("Missing OPENAI_API_KEY")
+```
+
+Production secrets management options:
+
+| Tool | Purpose |
+| --- | --- |
+| AWS Secrets Manager | AWS secret storage |
+| Azure Key Vault | Azure secret management |
+| Google Secret Manager | GCP secret management |
+| HashiCorp Vault | Centralized secrets management |
+
+Important practices:
+
+- Never commit secrets.
+- Rotate compromised credentials.
+- Use separate development and production credentials.
+- Apply least-privilege access.
+- Avoid exposing secrets in exception messages.
+
+### 5. Authentication
+
+Problem: an API accepts requests without verifying who is making them. Anyone who can reach
+`POST /tickets/classify` may be able to use LLM resources.
+
+Authentication answers: **Who are you?**
+
+| Method | Use case |
+| --- | --- |
+| API keys | Service-to-service authentication |
+| JWT | Stateless application authentication |
+| OAuth 2.0 | Delegated authorization |
+| OpenID Connect | User identity |
+| SSO | Enterprise authentication |
+
+Install:
+
+```text
+uv add fastapi pyjwt "pwdlib[argon2]"
+```
+
+`src/security/authentication.py`:
+
+```python
+import jwt
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+SECRET_KEY = "load-from-secret-manager"
+ALGORITHM = "HS256"
+
+security = HTTPBearer()
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"require": ["exp", "sub"]},
+        )
+        return {
+            "user_id": payload["sub"],
+            "role": payload.get("role", "user"),
+        }
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication token",
+        )
+```
+
+Production considerations:
+
+- Use a securely generated signing key.
+- Validate issuer and audience.
+- Use short-lived access tokens.
+- Implement refresh-token rotation where appropriate.
+- Prefer a trusted identity provider for enterprise applications.
+
+### 6. Authorization and RBAC
+
+Authentication alone does not solve access control. Authorization answers: **What are you allowed
+to do?**
+
+Example roles:
+
+| Role | Permissions |
+| --- | --- |
+| Customer | Submit and view own tickets |
+| Support Agent | View assigned tickets |
+| Manager | Approve eligible refunds |
+| Administrator | Manage users and system configuration |
+
+`src/security/authorization.py`:
+
+```python
+from fastapi import HTTPException
+
+ROLE_PERMISSIONS = {
+    "customer": ["ticket:create", "ticket:read_own"],
+    "support_agent": ["ticket:read_assigned", "ticket:classify"],
+    "manager": ["ticket:read_all", "refund:approve"],
+    "admin": ["ticket:read_all", "refund:approve", "user:manage"],
+}
+
+
+def require_permission(user, permission):
+    permissions = ROLE_PERMISSIONS.get(user["role"], [])
+    if permission not in permissions:
+        raise HTTPException(status_code=403, detail="Permission denied")
+```
+
+Usage:
+
+```python
+require_permission(user, "refund:approve")
+```
+
+RBAC must be combined with resource-level authorization. A customer with `ticket:read_own` must not
+be able to retrieve another customer's ticket by changing a ticket ID.
+
+### 7. Secure LLM tool execution
+
+One of the most important topics for AI Agent Engineers.
+
+Problem: an AI agent can call external tools.
+
+```text
+Agent
+  |
+  +-- get_order()
+  |
+  +-- retrieve_customer()
+  |
+  +-- issue_refund()
+  |
+  +-- update_ticket()
+```
+
+What if the LLM executes `issue_refund()` without proper authorization? Put a security layer
+between the agent and its tools.
+
+```mermaid
+flowchart TD
+    A[User request] --> B[AI agent]
+    B --> C[Tool request]
+    C --> D[Security gateway]
+    D --> E{Authorized?}
+    E -- No --> F[Reject]
+    E -- Yes --> G{Approval required?}
+    G -- Yes --> H[Human approval]
+    H --> I[Execute tool]
+    G -- No --> I
+    I --> J[Audit log]
+```
+
+Example:
+
+```python
+def execute_refund(user, order_id, amount):
+    require_permission(user, "refund:approve")
+    if amount <= 0:
+        raise ValueError("Invalid refund amount")
+    if amount > 500:
+        raise PermissionError("Manager approval required")
+    return {
+        "status": "refund_requested",
+        "order_id": order_id,
+        "amount": amount,
+    }
+```
+
+This is illustrative. Production execution must additionally verify order ownership, refund
+eligibility, currency, transaction state, and approval records against trusted systems.
+
+Golden rule: **the LLM may request a tool call; the application decides whether it is
+authorized.**
+
+### 8. Multi-tenant security
+
+Problem: an AI platform supports multiple organizations. A user from Organization A must never
+access Organization B's information. This is tenant isolation.
+
+```text
+Organization A
+    |
+    +-- Customer A1
+    +-- Customer A2
+    +-- Tickets
+
+Organization B
+    |
+    +-- Customer B1
+    +-- Customer B2
+    +-- Tickets
+```
+
+Database example: every tenant-owned record includes a tenant identifier.
+
+```sql
+CREATE TABLE tickets (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    customer_id UUID NOT NULL,
+    message TEXT NOT NULL,
+    category VARCHAR(100)
+);
+```
+
+Query:
+
+```sql
+SELECT *
+FROM tickets
+WHERE id = :ticket_id
+  AND tenant_id = :authenticated_tenant_id;
+```
+
+Never trust `tenant_id` supplied directly by the client.
+
+PostgreSQL Row-Level Security:
+
+```sql
+ALTER TABLE tickets ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation
+ON tickets
+USING (
+    tenant_id = current_setting('app.tenant_id')::uuid
+)
+WITH CHECK (
+    tenant_id = current_setting('app.tenant_id')::uuid
+);
+```
+
+Set the tenant context using a transaction-scoped database setting and ensure the connection pool
+cannot leak tenant context between requests.
+
+### 9. Rate limiting and abuse prevention
+
+Problem: an attacker sends thousands of requests to the LLM API, increasing token costs, causing
+provider rate-limit errors, degrading service, and enabling denial of service.
+
+Install:
+
+```text
+uv add slowapi
+```
+
+Example:
+
+```python
+from fastapi import FastAPI, Request
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
+app = FastAPI()
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.post("/tickets/classify")
+@limiter.limit("10/minute")
+async def classify_ticket(request: Request):
+    return {"status": "accepted"}
+```
+
+Production rate limiting should consider:
+
+- User ID.
+- Tenant ID.
+- IP address.
+- Provider quotas.
+- Token consumption.
+- Concurrent requests.
+- Daily spending limits.
+
+IP-based limits alone are insufficient for authenticated multi-tenant applications.
+
+### 10. Data security and privacy
+
+LLM applications process potentially sensitive information, including PII, customer records,
+financial information, authentication tokens, business documents, and internal company
+information.
+
+| Control | Purpose |
+| --- | --- |
+| Encryption in transit | Protect network communication |
+| Encryption at rest | Protect stored information |
+| PII redaction | Reduce exposure to models |
+| Data minimization | Send only necessary information |
+| Access controls | Restrict sensitive records |
+| Retention policies | Limit data storage duration |
+| Audit logging | Track sensitive operations |
+
+Also consider whether prompts and responses are stored by the provider, the application, or the
+observability platform.
+
+### 11. Security monitoring and audit logging
+
+Problem: an attack cannot be investigated if nothing was recorded.
+
+Create security events for:
+
+- Failed authentication.
+- Unauthorized tool calls.
+- Suspicious prompt injection attempts.
+- Excessive API requests.
+- Cross-tenant access attempts.
+- Failed authorization checks.
+- Sensitive operations.
+
+Example:
+
+```python
+import logging
+
+security_logger = logging.getLogger("security")
+
+
+def log_security_event(user_id, action, status):
+    security_logger.warning(
+        "user_id=%s action=%s status=%s",
+        user_id,
+        action,
+        status,
+    )
+```
+
+Never log API keys, access tokens, raw passwords, or unnecessary PII. For production, use
+structured logs, immutable audit records where required, and centralized monitoring.
+
+### 12. Defense-in-depth architecture
+
+Defense in depth means applying multiple independent security controls.
+
+```mermaid
+flowchart TD
+    A[Client] --> B[API Gateway]
+    B --> C[Authentication]
+    C --> D[Authorization and RBAC]
+    D --> E[Rate Limiting]
+    E --> F[Input Guardrails]
+    F --> G[AI Agent]
+    G --> H[LLM Provider]
+    G --> I[Tool Security Gateway]
+    I --> J[Business Services]
+    J --> K[Database]
+    H --> L[Output Guardrails]
+    L --> M[Response]
+    N[Secrets Manager] --> C
+    N --> H
+    O[Security Monitoring] --> C
+    O --> D
+    O --> E
+    O --> I
+```
+
+Security controls must be independent of the LLM's decisions.
+
+### 13. Recommended project structure
+
+```text
+src/
+├── security/
+│   ├── __init__.py
+│   ├── secrets.py
+│   ├── authentication.py
+│   ├── authorization.py
+│   ├── rbac.py
+│   ├── tool_security.py
+│   ├── tenant_isolation.py
+│   ├── rate_limiting.py
+│   ├── audit_logging.py
+│   └── encryption.py
+│
+├── guardrails/
+│   └── ...
+│
+└── config.py
+
+tests/
+├── security/
+│   ├── test_authentication.py
+│   ├── test_authorization.py
+│   ├── test_rbac.py
+│   ├── test_tool_security.py
+│   ├── test_tenant_isolation.py
+│   └── test_rate_limiting.py
+│
+└── guardrails/
+    └── ...
+```
+
+### 14. Practical lab
+
+Required hands-on exercise: build a security layer for ticket-triage.
+
+| Step | Task | Expected result |
+| --- | --- | --- |
+| 1 | Secrets management | No hardcoded credentials |
+| 2 | Authentication | Verify JWT tokens |
+| 3 | Authorization | Enforce permissions |
+| 4 | RBAC | Implement four roles |
+| 5 | Tool security | Restrict sensitive tool calls |
+| 6 | Tenant isolation | Prevent cross-tenant access |
+| 7 | Rate limiting | Limit API consumption |
+| 8 | Audit logging | Record security events |
+| 9 | Security testing | Verify unauthorized requests fail |
+| 10 | Integration | Connect security to the agent |
+
+Security test cases:
+
+| Test | Scenario | Expected |
+| --- | --- | --- |
+| SEC01 | Invalid JWT | HTTP 401 |
+| SEC02 | Expired JWT | HTTP 401 |
+| SEC03 | Customer approves refund | HTTP 403 |
+| SEC04 | Agent calls unauthorized tool | Reject |
+| SEC05 | Tenant A accesses Tenant B ticket | Reject |
+| SEC06 | Excessive requests | HTTP 429 |
+| SEC07 | Missing API key | Application startup failure |
+| SEC08 | Sensitive operation | Audit event generated |
+| SEC09 | Unauthorized database query | Reject |
+| SEC10 | Valid authorized request | Accept |
+
+### 15. Git commit strategy
+
+Lesson guidance proposes incremental commits as each security component is implemented:
+
+```text
+git add src/security/secrets.py
+git commit -m "feat(security): implement secrets management"
+
+git add src/security/authentication.py
+git commit -m "feat(security): implement JWT authentication"
+
+git add src/security/authorization.py src/security/rbac.py
+git commit -m "feat(security): implement RBAC authorization"
+
+git add src/security/tool_security.py
+git commit -m "feat(security): secure agent tool execution"
+
+git add src/security/tenant_isolation.py
+git commit -m "feat(security): enforce tenant isolation"
+
+git add src/security/rate_limiting.py
+git commit -m "feat(security): implement API rate limiting"
+
+git add src/security/audit_logging.py
+git commit -m "feat(security): implement security audit logging"
+
+git add tests/security/
+git commit -m "test(security): add security integration tests"
+```
+
+These are lesson artifacts, not commands executed for this documentation update.
+
+### 16. Knowledge assessment
+
+Before proceeding, you should be able to answer:
+
+1. What is the difference between authentication and authorization?
+2. Why should API keys never be committed to Git?
+3. What is RBAC?
+4. Why must tool execution be controlled outside the LLM?
+5. What is tenant isolation?
+6. How does PostgreSQL Row-Level Security work?
+7. Why is rate limiting important for LLM applications?
+8. What is defense in depth?
+9. What information should never appear in application logs?
+10. How would you secure an AI agent that can issue refunds?
+
+### 17. What comes next?
+
+Stage 5 progression completed so far:
+
+| Day | Topic |
+| --- | --- |
+| 79 | LLM fallback strategies |
+| 80 | LLM retry strategies |
+| 81 | Circuit breaker patterns |
+| 82 | Rate limiting |
+| 83 | LLM caching strategies |
+| 84 | LLM cost optimization |
+| 85 | LLM observability |
+| 86 | LLM evaluation frameworks |
+| 87 | LLM guardrails |
+| 88 | LLM security engineering |
+
+Next focus: integrate these controls into a production LLM Gateway and validate them with
+security tests, evaluation gates, and observability telemetry.
+
+### Current implementation status
+
+No `src/security/` package or `tests/security/` suite exists. There is no `secrets.py`,
+`authentication.py`, `authorization.py`, `rbac.py`, `tool_security.py`, `tenant_isolation.py`,
+`rate_limiting.py`, `audit_logging.py`, or `encryption.py`.
+
+`pyproject.toml` already includes `python-dotenv`, and `src/ai_agent/config.py` calls
+`load_dotenv()` and reads `OPENAI_API_KEY` and `OPENAI_MODEL` from the environment. There is no
+`src/security/secrets.py` abstraction, no startup validation beyond `os.environ[...]` raising a
+`KeyError`, and no secrets-manager integration.
+
+`.gitignore` includes `.env`, but not the `.env.*` and `!.env.example` pattern recommended by the
+lesson, even though `.env.example` exists. A local `.env` file exists and is ignored; no secret
+values were read or recorded in this summary.
+
+The repository has no FastAPI dependency, no JWT or password-hashing dependency, no `slowapi`, no
+PostgreSQL driver or ORM, and no HTTP API layer. `main.py` is a console entry point. Therefore
+authentication, RBAC, tenant isolation, rate limiting, and audit logging cannot yet be enforced at
+an API boundary.
+
+Day 87 documented guardrails are also not implemented, and no LLM Gateway or tool execution layer
+exists. There are no agent tools such as `get_order()`, `retrieve_customer()`, `issue_refund()`, or
+`update_ticket()` to place behind a security gateway, and no trusted business-policy service to
+verify refund ownership, eligibility, currency, transaction state, or approval records.
+
+### Definition of done
+
+- [x] Explain the eight LLM security domains.
+- [x] Distinguish authentication from authorization.
+- [x] Explain RBAC and resource-level authorization.
+- [x] Explain why tool execution must be controlled outside the LLM.
+- [x] Explain tenant isolation and PostgreSQL Row-Level Security.
+- [x] Explain rate limiting dimensions beyond IP address.
+- [x] Explain data security, privacy, and audit-logging controls.
+- [x] Explain defense in depth and independent security enforcement.
+- [ ] Add `src/security/` modules and `tests/security/` suite.
+- [ ] Harden secrets management and `.gitignore` patterns.
+- [ ] Implement JWT authentication and RBAC at an API boundary.
+- [ ] Add a tool security gateway with human approval for sensitive actions.
+- [ ] Enforce tenant isolation in application queries and database policy.
+- [ ] Add user-, tenant-, token-, and cost-aware rate limiting.
+- [ ] Add structured security audit logging and monitoring.
+- [ ] Integrate security controls with guardrails, evaluation, and observability.
+
+### Diagrams
+
+```mermaid
+flowchart LR
+    A[User identity] --> B[Authentication]
+    B --> C[Role and permission]
+    C --> D[Authorization]
+    D --> E[Resource check]
+    E --> F[Allowed or denied]
+```
+
+```mermaid
+flowchart TD
+    A[LLM tool request] --> B[Security gateway]
+    B --> C{Permission allowed?}
+    C -- No --> D[Reject]
+    C -- Yes --> E{Sensitive action?}
+    E -- Yes --> F[Human approval]
+    F -- Approved --> G[Execute tool]
+    F -- Rejected --> D
+    E -- No --> G
+    G --> H[Audit event]
+```
+
+```mermaid
+flowchart TD
+    A[Client] --> B[Secrets-backed service identity]
+    B --> C[Authenticated request]
+    C --> D[Tenant context]
+    D --> E[RBAC permission]
+    E --> F[Rate and cost limits]
+    F --> G[Guardrails]
+    G --> H[LLM and tools]
+    H --> I[Output and data controls]
+    I --> J[Audit and monitoring]
+    J --> K[Defense in depth]
+```
+
